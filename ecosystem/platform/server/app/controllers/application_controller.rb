@@ -8,29 +8,25 @@ require 'logging/logs'
 class ApplicationController < ActionController::Base
   include Logging::Logs
 
-  before_action :set_csrf_cookie
   before_action :set_logging_metadata
   before_action :set_sentry_metadata
 
   protect_from_forgery with: :exception
 
-  def set_csrf_cookie
-    cookies['CSRF-TOKEN'] = {
-      value: form_authenticity_token,
-      secure: true,
-      same_site: :strict,
-      domain: ENV.fetch('SITE_DOMAIN', 'localhost')
-    }
+  def forum_sso?
+    cookies['FORUM-SSO'].present?
   end
 
   def after_sign_in_path_for(user)
     stored_location = stored_location_for(user)
     return stored_location if stored_location.present?
 
-    if user.email.nil?
+    if user.email.nil? || user.username.nil?
       onboarding_email_path
-    else
+    elsif Flipper.enabled?(:it2_registration_open)
       it2_path
+    else
+      it1_path
     end
   end
 
@@ -43,7 +39,7 @@ class ApplicationController < ActionController::Base
   end
 
   def ensure_confirmed!
-    redirect_to onboarding_email_path unless current_user&.confirmed?
+    redirect_to onboarding_email_path unless current_user&.registration_completed?
   end
 
   def append_info_to_payload(payload)

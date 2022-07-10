@@ -6,53 +6,66 @@ use async_trait::async_trait;
 use thiserror::Error as ThisError;
 
 use crate::{
+    configuration::NodeAddress,
+    evaluator::EvaluationSummary,
+    evaluators::{
+        direct::{ApiEvaluatorError, NodeIdentityEvaluatorError, TpsEvaluatorError},
+        metrics::MetricsEvaluatorError,
+        system_information::SystemInformationEvaluatorError,
+    },
     metric_collector::{MetricCollector, MetricCollectorError},
-    metric_evaluator::MetricsEvaluatorError,
-    public_types::EvaluationSummary,
 };
 
 #[derive(Debug, ThisError)]
 pub enum RunnerError {
+    #[error("Failed to evaluate API: {0}")]
+    ApiEvaluatorError(#[from] ApiEvaluatorError),
+
     /// We failed to collect metrics for some reason.
-    #[error("Failed to collect metrics")]
-    MetricCollectorError(MetricCollectorError),
+    #[error("Failed to collect metrics: {0}")]
+    MetricCollectorError(#[from] MetricCollectorError),
+
+    /// One of the metrics evaluators failed. This is not the same as a poor score from
+    /// an evaluator, this is an actual failure in the evaluation process.
+    #[error("Failed to evaluate metrics: {0}")]
+    MetricEvaluatorError(#[from] MetricsEvaluatorError),
+
+    /// We failed to get the node identity.
+    #[error("Failed to check identity of node: {0}")]
+    NodeIdentityEvaluatorError(#[from] NodeIdentityEvaluatorError),
 
     /// We couldn't parse the metrics.
-    #[error("Failed to parse metrics")]
+    #[error("Failed to parse metrics: {0}")]
     ParseMetricsError(Error),
 
-    /// One of the evaluators failed. This is not the same as a poor score from
-    /// an evaluator, this is an actual failure in the evaluation process.
-    #[error("Failed to evaluate metrics")]
-    MetricEvaluatorError(MetricsEvaluatorError),
+    /// One of the system information evaluators failed. This is not the same
+    /// as a poor score from an evaluator, this is an actual failure in the
+    /// evaluation process.
+    #[error("Failed to evaluate system information: {0}")]
+    SystemInformationEvaluatorError(#[from] SystemInformationEvaluatorError),
 
-    #[error("Encountered an unknown error")]
-    UnknownError(Error),
+    /// The TPS evaluator failed. This is not the same as a poor score from an
+    /// evaluator, this is an actual failure in the evaluation process.
+    #[error("Failed to evaluate TPS: {0}")]
+    TpsEvaluatorError(#[from] TpsEvaluatorError),
 }
 
-// This runner doesn't block in the multithreading sense, but from the user
-// perspective. To run the health check, we pull metrics once, wait, and then
-// pull the metrics again. It does not support continually running beyond this
-// point. You can imagine smarter versions of this where you store the last seen
-// set of metrics, then compare against that, or perhaps even multiple previously
-// seen sets of metrics and do more complex analysis. Additionally we could leverage
-// things like long polling +/ sticky routing to make it that the client request
-// doesn't just hang waiting for the run to complete.
-
-/// todo describe the trait
-/// todo assert these trait constraints are necessary
-/// todo consider whether we need Clone if we need to spawn multiple handlers ourselves.
+/// This trait describes a Runner, something that can take in instances of other
+/// necessary traits, such as a metric collector for the baseline node, and then,
+/// upon a `run` call, drive a node evaluation end to end. This is the top level
+/// entrypoint to the core functionality of NHC, it should be hooked up fairly
+/// directly to the API endpoint handlers.
 ///
-/// Note:
-///  - Sync + Send is required because this will be a member of the todo which needs
-///      to be used across async boundaries
-///
-///  - 'static is required because this will be stored on the todo which needs to be 'static
+/// Note on trait bounds:
+///  - Sync + Send is required because this will be a member of the Api which
+///    needs to be used across thread boundaries.
+///  - The 'static lifetime is required because this will be stored on the Api
+///    which needs to be 'static.
 #[async_trait]
 pub trait Runner: Sync + Send + 'static {
-    // TODO: add proper result type.
     async fn run<M: MetricCollector>(
         &self,
-        target_collector: &M,
+        target_node_address: &NodeAddress,
+        target_metric_collector: &M,
     ) -> Result<EvaluationSummary, RunnerError>;
 }

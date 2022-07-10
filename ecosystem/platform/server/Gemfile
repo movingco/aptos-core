@@ -41,6 +41,8 @@ gem 'cancancan'
 gem 'devise'
 gem 'kaminari'
 
+gem 'memery'
+
 # Oauth
 gem 'omniauth'
 gem 'omniauth-discord'
@@ -50,6 +52,9 @@ gem 'omniauth-rails_csrf_protection'
 
 # Use Rack CORS for handling Cross-Origin Resource Sharing (CORS), making cross-origin AJAX possible
 gem 'rack-cors'
+
+# Discourse
+gem 'discourse_api'
 
 # Use Redis adapter to run Action Cable in production
 # gem "redis", "~> 4.0"

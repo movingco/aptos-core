@@ -90,6 +90,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "again"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05802a5ad4d172eaf796f7047b42d0af9db513585d16d4169660a21613d34b93"
+dependencies = [
+ "log",
+ "rand 0.7.3",
+ "wasm-timer",
+]
+
+[[package]]
 name = "ahash"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -129,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "aptos"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "aptos-config",
@@ -138,6 +149,7 @@ dependencies = [
  "aptos-github-client",
  "aptos-keygen",
  "aptos-logger",
+ "aptos-module-verifier",
  "aptos-rest-client",
  "aptos-sdk",
  "aptos-secure-storage",
@@ -158,6 +170,7 @@ dependencies = [
  "hex",
  "itertools",
  "move-deps",
+ "parse_duration",
  "rand 0.7.3",
  "reqwest",
  "serde 1.0.137",
@@ -714,30 +727,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "aptos-metrics"
-version = "0.1.0"
-dependencies = [
- "aptos-logger",
- "aptos-metrics-core",
- "aptos-telemetry",
- "aptos-workspace-hack",
- "assert_approx_eq",
- "futures",
- "hyper",
- "once_cell",
- "prometheus",
- "rusty-fork",
- "serde_json",
- "sysinfo",
- "tokio",
-]
-
-[[package]]
 name = "aptos-metrics-core"
 version = "0.1.0"
 dependencies = [
  "aptos-workspace-hack",
  "prometheus",
+]
+
+[[package]]
+name = "aptos-module-verifier"
+version = "0.1.0"
+dependencies = [
+ "aptos-workspace-hack",
+ "move-deps",
 ]
 
 [[package]]
@@ -752,7 +754,6 @@ dependencies = [
  "aptos-infallible",
  "aptos-logger",
  "aptos-mempool",
- "aptos-metrics",
  "aptos-secure-storage",
  "aptos-state-view",
  "aptos-telemetry",
@@ -769,7 +770,6 @@ dependencies = [
  "consensus-notifications",
  "crash-handler",
  "data-streaming-service",
- "debug-interface",
  "event-notifications",
  "executor",
  "executor-types",
@@ -777,6 +777,7 @@ dependencies = [
  "framework",
  "futures",
  "hex",
+ "inspection-service",
  "jemallocator",
  "mempool-notifications",
  "network",
@@ -797,23 +798,30 @@ name = "aptos-node-checker"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "aptos-api",
+ "aptos-config",
+ "aptos-crypto",
  "aptos-logger",
- "aptos-metrics",
  "aptos-rest-client",
+ "aptos-sdk",
  "aptos-workspace-hack",
  "async-trait",
  "clap 3.1.18",
+ "const_format",
  "env_logger 0.8.4",
  "futures",
- "humantime 2.1.0",
  "log",
  "once_cell",
  "poem",
  "poem-openapi",
  "prometheus-parse",
  "reqwest",
+ "serde 1.0.137",
+ "serde_json",
+ "serde_yaml",
  "thiserror",
  "tokio",
+ "transaction-emitter-lib",
  "url",
 ]
 
@@ -947,6 +955,8 @@ dependencies = [
  "aptos-logger",
  "aptos-metrics-core",
  "aptos-rest-client",
+ "aptos-sdk",
+ "aptos-transaction-builder",
  "aptos-types",
  "aptos-workspace-hack",
  "async-trait",
@@ -955,7 +965,9 @@ dependencies = [
  "framework",
  "futures",
  "hex",
+ "itertools",
  "move-deps",
+ "percent-encoding",
  "reqwest",
  "serde 1.0.137",
  "serde_json",
@@ -1074,6 +1086,7 @@ dependencies = [
 name = "aptos-telemetry"
 version = "0.1.0"
 dependencies = [
+ "aptos-api",
  "aptos-config",
  "aptos-infallible",
  "aptos-logger",
@@ -1086,6 +1099,8 @@ dependencies = [
  "network",
  "once_cell",
  "prometheus",
+ "rand 0.7.3",
+ "rand_core 0.5.1",
  "reqwest",
  "serde 1.0.137",
  "serde_json",
@@ -1197,6 +1212,7 @@ dependencies = [
  "serde 1.0.137",
  "serde_bytes",
  "serde_json",
+ "serde_yaml",
  "thiserror",
  "tiny-keccak",
 ]
@@ -1243,11 +1259,13 @@ dependencies = [
  "aptos-crypto-derive",
  "aptos-logger",
  "aptos-metrics-core",
+ "aptos-module-verifier",
  "aptos-parallel-executor",
  "aptos-state-view",
  "aptos-types",
  "aptos-workspace-hack",
  "bcs",
+ "better_any",
  "fail 0.5.0",
  "framework",
  "mirai-annotations",
@@ -1259,6 +1277,7 @@ dependencies = [
  "rayon",
  "serde 1.0.137",
  "serde_json",
+ "smallvec",
  "tracing",
 ]
 
@@ -1266,11 +1285,14 @@ dependencies = [
 name = "aptos-workspace-hack"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "backtrace",
  "byteorder",
  "bytes",
  "cc",
  "chrono",
  "clap 2.34.0",
+ "clap 3.1.18",
  "crossbeam-channel",
  "crossbeam-deque",
  "crossbeam-queue",
@@ -1292,6 +1314,7 @@ dependencies = [
  "libc",
  "log",
  "memchr",
+ "num-bigint 0.2.6",
  "num-integer",
  "num-traits 0.2.15",
  "parking_lot 0.12.0",
@@ -1307,12 +1330,14 @@ dependencies = [
  "standback",
  "subtle",
  "syn 1.0.95",
+ "textwrap 0.15.0",
  "tokio",
  "tokio-util 0.6.10",
  "tokio-util 0.7.2",
  "toml",
  "tracing",
  "tracing-core",
+ "url",
  "warp",
 ]
 
@@ -1512,6 +1537,7 @@ dependencies = [
  "rand 0.7.3",
  "regex",
  "reqwest",
+ "scratchpad",
  "serde 1.0.137",
  "serde_json",
  "storage-interface",
@@ -2161,6 +2187,7 @@ dependencies = [
  "futures",
  "itertools",
  "mirai-annotations",
+ "move-deps",
  "network",
  "num-derive",
  "num-traits 0.2.15",
@@ -2240,9 +2267,9 @@ checksum = "fbdcdcb6d86f71c5e97409ad45898af11cbc995b4ee8112d59095a28d376c935"
 
 [[package]]
 name = "const_format"
-version = "0.2.23"
+version = "0.2.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0936ffe6d0c8d6a51b3b0a73b2acbe925d786f346cf45bfddc8341d79fb7dc8a"
+checksum = "939dc9e2eb9077e0679d2ce32de1ded8531779360b003b4a972a7a39ec263495"
 dependencies = [
  "const_format_proc_macros",
 ]
@@ -2289,7 +2316,7 @@ dependencies = [
  "rand 0.8.5",
  "sha2 0.10.2",
  "subtle",
- "time 0.3.9",
+ "time 0.3.11",
  "version_check",
 ]
 
@@ -2723,22 +2750,6 @@ name = "debug-ignore"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e51694c5f8b91baf933e6429a3df4ff3e9f1160386d150790b97bef73337d1b"
-
-[[package]]
-name = "debug-interface"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aptos-config",
- "aptos-logger",
- "aptos-metrics",
- "aptos-workspace-hack",
- "bytes",
- "reqwest",
- "serde 1.0.137",
- "tokio",
- "warp",
-]
 
 [[package]]
 name = "derive_more"
@@ -3210,6 +3221,8 @@ dependencies = [
  "aptos-workspace-hack",
  "bcs",
  "itertools",
+ "once_cell",
+ "rayon",
  "scratchpad",
  "serde 1.0.137",
  "storage-interface",
@@ -3326,13 +3339,13 @@ dependencies = [
  "aptos-workspace-hack",
  "async-trait",
  "cached-framework-packages",
- "debug-interface",
  "either",
  "futures",
  "hex",
  "hyper",
  "hyper-proxy",
  "hyper-tls",
+ "inspection-service",
  "k8s-openapi",
  "kube",
  "rand 0.7.3",
@@ -3350,6 +3363,7 @@ dependencies = [
  "termcolor",
  "tokio",
  "transaction-emitter",
+ "transaction-emitter-lib",
  "url",
 ]
 
@@ -3357,6 +3371,7 @@ dependencies = [
 name = "forge-cli"
 version = "0.0.0"
 dependencies = [
+ "aptos-logger",
  "aptos-rest-client",
  "aptos-sdk",
  "aptos-workspace-hack",
@@ -4170,12 +4185,12 @@ checksum = "ce23b50ad8242c51a442f3ff322d56b02f08852c77e4c0b4d3fd684abc89c683"
 
 [[package]]
 name = "indexmap"
-version = "1.8.2"
+version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6012d540c5baa3589337a98ce73408de9b5a25ec9fc2c6fd6be8f0d39e0ca5a"
+checksum = "10a35a97730320ffe8e2d410b5d3b69279b98d2c14bdb8b70ea89ecf7888d41e"
 dependencies = [
  "autocfg",
- "hashbrown 0.11.2",
+ "hashbrown 0.12.1",
 ]
 
 [[package]]
@@ -4195,6 +4210,29 @@ name = "indoc"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05a0bd019339e5d968b37855180087b7b9d512c5046fbd244cf8c95687927d6e"
+
+[[package]]
+name = "inspection-service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aptos-config",
+ "aptos-infallible",
+ "aptos-logger",
+ "aptos-metrics-core",
+ "aptos-telemetry",
+ "aptos-workspace-hack",
+ "assert_approx_eq",
+ "futures",
+ "hyper",
+ "once_cell",
+ "prometheus",
+ "reqwest",
+ "rusty-fork",
+ "serde_json",
+ "sysinfo",
+ "tokio",
+]
 
 [[package]]
 name = "instant"
@@ -5017,7 +5055,7 @@ dependencies = [
  "log",
  "move-compiler",
  "move-model",
- "num",
+ "num 0.4.0",
  "once_cell",
  "regex",
  "serde 1.0.137",
@@ -5134,7 +5172,7 @@ dependencies = [
  "move-disassembler",
  "move-ir-types",
  "move-symbol-pool",
- "num",
+ "num 0.4.0",
  "once_cell",
  "regex",
  "serde 1.0.137",
@@ -5199,7 +5237,7 @@ dependencies = [
  "move-model",
  "move-prover-boogie-backend",
  "move-stackless-bytecode",
- "num",
+ "num 0.4.0",
  "once_cell",
  "pretty",
  "rand 0.8.5",
@@ -5227,7 +5265,7 @@ dependencies = [
  "move-core-types",
  "move-model",
  "move-stackless-bytecode",
- "num",
+ "num 0.4.0",
  "once_cell",
  "pretty",
  "rand 0.8.5",
@@ -5284,7 +5322,7 @@ dependencies = [
  "move-ir-to-bytecode",
  "move-model",
  "move-read-write-set-types",
- "num",
+ "num 0.4.0",
  "once_cell",
  "paste",
  "petgraph 0.5.1",
@@ -5305,7 +5343,7 @@ dependencies = [
  "move-core-types",
  "move-model",
  "move-stackless-bytecode",
- "num",
+ "num 0.4.0",
  "serde 1.0.137",
 ]
 
@@ -5727,15 +5765,29 @@ dependencies = [
 
 [[package]]
 name = "num"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8536030f9fea7127f841b45bb6243b27255787fb4eb83958aa1ef9d2fdc0c36"
+dependencies = [
+ "num-bigint 0.2.6",
+ "num-complex 0.2.4",
+ "num-integer",
+ "num-iter",
+ "num-rational 0.2.4",
+ "num-traits 0.2.15",
+]
+
+[[package]]
+name = "num"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "43db66d1170d347f9a065114077f7dccb00c1b9478c89384490a3425279a4606"
 dependencies = [
  "num-bigint 0.4.3",
- "num-complex",
+ "num-complex 0.4.1",
  "num-integer",
  "num-iter",
- "num-rational",
+ "num-rational 0.4.0",
  "num-traits 0.2.15",
 ]
 
@@ -5758,6 +5810,16 @@ checksum = "f93ab6289c7b344a8a9f60f88d80aa20032336fe78da341afc91c8a2341fc75f"
 dependencies = [
  "autocfg",
  "num-integer",
+ "num-traits 0.2.15",
+]
+
+[[package]]
+name = "num-complex"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6b19411a9719e753aff12e5187b74d60d3dc449ec3f4dc21e3989c3f554bc95"
+dependencies = [
+ "autocfg",
  "num-traits 0.2.15",
 ]
 
@@ -5798,6 +5860,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d03e6c028c5dc5cac6e2dec0efda81fc887605bb3d884578bb6d6bf7514e252"
 dependencies = [
  "autocfg",
+ "num-integer",
+ "num-traits 0.2.15",
+]
+
+[[package]]
+name = "num-rational"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c000134b5dbf44adc5cb772486d335293351644b801551abe8f75c84cfa4aef"
+dependencies = [
+ "autocfg",
+ "num-bigint 0.2.6",
  "num-integer",
  "num-traits 0.2.15",
 ]
@@ -6087,6 +6161,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "parse_duration"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7037e5e93e0172a5a96874380bf73bc6ecef022e26fa25f2be26864d6b3ba95d"
+dependencies = [
+ "lazy_static 1.4.0",
+ "num 0.2.1",
+ "regex",
+]
+
+[[package]]
 name = "paste"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6369,7 +6454,7 @@ dependencies = [
  "smallvec",
  "tempfile",
  "thiserror",
- "time 0.3.9",
+ "time 0.3.11",
  "tokio",
  "tokio-stream",
  "tokio-util 0.7.2",
@@ -6409,6 +6494,7 @@ dependencies = [
  "serde_yaml",
  "thiserror",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -6571,11 +6657,12 @@ dependencies = [
 
 [[package]]
 name = "prometheus-parse"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c996f3caea1c51aa034c0d2dfd8447a12c555f4567b02677ef8a865ac4cce712"
+checksum = "ef7a8ed15bcffc55fe0328931ef20d393bb89ad704756a37bd20cffb4804f306"
 dependencies = [
  "chrono",
+ "itertools",
  "lazy_static 1.4.0",
  "regex",
 ]
@@ -7893,7 +7980,6 @@ dependencies = [
  "base64",
  "bcs",
  "cached-framework-packages",
- "debug-interface",
  "diesel",
  "forge",
  "futures",
@@ -7979,6 +8065,7 @@ dependencies = [
  "move-deps",
  "network",
  "once_cell",
+ "scratchpad",
  "serde 1.0.137",
  "storage-interface",
  "storage-service-client",
@@ -8546,9 +8633,9 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.9"
+version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2702e08a7a860f005826c6815dcac101b19b5eb330c27fe4a5928fec1d20ddd"
+checksum = "72c91f41dcb2f096c05f0873d667dceec1087ce5bcf984ec8ffb19acddbb3217"
 dependencies = [
  "itoa 1.0.2",
  "libc",
@@ -8903,6 +8990,25 @@ name = "transaction-emitter"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "aptos-logger",
+ "aptos-sdk",
+ "aptos-workspace-hack",
+ "clap 3.1.18",
+ "futures",
+ "itertools",
+ "rand 0.7.3",
+ "rand_core 0.5.1",
+ "termion",
+ "tokio",
+ "transaction-emitter-lib",
+]
+
+[[package]]
+name = "transaction-emitter-lib"
+version = "0.0.0"
+dependencies = [
+ "again",
+ "anyhow",
  "aptos",
  "aptos-config",
  "aptos-crypto",
@@ -8911,14 +9017,17 @@ dependencies = [
  "aptos-sdk",
  "aptos-transaction-builder",
  "aptos-workspace-hack",
+ "clap 3.1.18",
  "futures",
  "itertools",
+ "once_cell",
  "rand 0.7.3",
  "rand_core 0.5.1",
  "reqwest",
- "structopt",
+ "serde 1.0.137",
  "termion",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -9176,6 +9285,7 @@ dependencies = [
  "idna",
  "matches",
  "percent-encoding",
+ "serde 1.0.137",
 ]
 
 [[package]]
@@ -9271,6 +9381,7 @@ dependencies = [
  "aptosdb",
  "executor",
  "executor-test-helpers",
+ "executor-types",
  "fail 0.5.0",
  "move-deps",
  "rand 0.7.3",
@@ -9443,6 +9554,21 @@ name = "wasm-bindgen-shared"
 version = "0.2.80"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d554b7f530dee5964d9a9468d95c1f8b8acae4f282807e7d27d4b03099a46744"
+
+[[package]]
+name = "wasm-timer"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be0ecb0db480561e9a7642b5d3e4187c128914e58aa84330b9493e3eb68c5e7f"
+dependencies = [
+ "futures",
+ "js-sys",
+ "parking_lot 0.11.2",
+ "pin-utils",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
 
 [[package]]
 name = "web-sys"

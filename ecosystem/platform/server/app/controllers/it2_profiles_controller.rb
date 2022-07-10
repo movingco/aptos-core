@@ -31,7 +31,8 @@ class It2ProfilesController < ApplicationController
 
     return unless check_recaptcha
 
-    v = NodeHelper::NodeVerifier.new(@it2_profile.validator_address, @it2_profile.validator_metrics_port,
+    v = NodeHelper::NodeVerifier.new(@it2_profile.validator_address,
+                                     @it2_profile.validator_metrics_port,
                                      @it2_profile.validator_api_port)
 
     if v.ip.ok
@@ -43,7 +44,13 @@ class It2ProfilesController < ApplicationController
 
     if @it2_profile.save
       log @it2_profile, 'created'
-      validate_node(v, do_location: true)
+
+      if Flipper.enabled?(:node_health_checker)
+        @it2_profile.enqueue_nhc_job(true)
+      else
+        validate_node(v, do_location: true)
+      end
+
       if @it2_profile.validator_verified?
         current_user.maybe_send_ait2_registration_complete_email
         redirect_to it2_path, notice: 'AIT2 application completed successfully: your node is verified!' and return
@@ -75,7 +82,12 @@ class It2ProfilesController < ApplicationController
                     notice: 'AIT2 node information updated' and return
       end
 
-      validate_node(v, do_location: ip_changed)
+      if Flipper.enabled?(:node_health_checker)
+        @it2_profile.enqueue_nhc_job(ip_changed)
+      else
+        validate_node(v, do_location: ip_changed)
+      end
+
       if @it2_profile.validator_verified?
         redirect_to it2_path, notice: 'AIT2 node verification completed successfully!' and return
       end
@@ -98,6 +110,33 @@ class It2ProfilesController < ApplicationController
 
     results.each do |result|
       @it2_profile.errors.add :base, result.message unless result.valid
+    end
+    results
+  end
+
+  def validate_node_nhc(node_verifier, do_location: false)
+    results = node_verifier.verify(ENV.fetch('NODE_CHECKER_BASELINE_CONFIG'))
+
+    unless results.ok
+      @it2_profile.update_attribute(:validator_verified, false)
+      @it2_profile.errors.add :base, results.message
+      return results
+    end
+
+    # Save without validation to avoid needless uniqueness checks
+    is_valid = results.evaluation_results.map { |r| r.score == 100 }.all?
+    @it2_profile.update_attribute(:validator_verified, is_valid)
+
+    LocationJob.perform_later({ it2_profile_id: @it2_profile.id }) if is_valid && do_location
+
+    results.evaluation_results.each do |result|
+      next unless result.score < 100
+
+      message = "#{result.category}: #{result.evaluator_name} - #{result.score}\n" \
+                "#{result.headline}:\n" \
+                "#{result.explanation}\n" \
+                "#{result.links}\n"
+      @it2_profile.errors.add :base, message
     end
     results
   end

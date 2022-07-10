@@ -27,7 +27,7 @@ use crate::aptos::{AptosVersion, Balance};
 pub use types::{Account, Resource, RestError};
 pub mod aptos;
 
-const USER_AGENT: &str = concat!("aptos-client-sdk-rust / ", env!("CARGO_PKG_VERSION"));
+pub const USER_AGENT: &str = concat!("aptos-client-sdk-rust / ", env!("CARGO_PKG_VERSION"));
 
 #[derive(Clone, Debug)]
 pub struct Client {
@@ -74,6 +74,8 @@ impl Client {
             ledger_version: u64,
             #[serde(deserialize_with = "types::deserialize_from_string")]
             ledger_timestamp: u64,
+            #[serde(deserialize_with = "types::deserialize_from_string")]
+            oldest_ledger_version: u64,
         }
 
         let response = self.inner.get(self.base_url.clone()).send().await?;
@@ -83,6 +85,7 @@ impl Client {
             epoch: r.epoch,
             version: r.ledger_version,
             timestamp_usecs: r.ledger_timestamp,
+            oldest_ledger_version: Some(r.oldest_ledger_version),
         });
 
         Ok(response)
@@ -256,6 +259,21 @@ impl Client {
         self.json(response).await
     }
 
+    pub async fn get_account_resources_at_version(
+        &self,
+        address: AccountAddress,
+        version: u64,
+    ) -> Result<Response<Vec<Resource>>> {
+        let url = self.base_url.join(&format!(
+            "accounts/{}/resources?version={}",
+            address, version
+        ))?;
+
+        let response = self.inner.get(url).send().await?;
+
+        self.json(response).await
+    }
+
     pub async fn get_resource<T: DeserializeOwned>(
         &self,
         address: AccountAddress,
@@ -284,6 +302,21 @@ impl Client {
         let url = self
             .base_url
             .join(&format!("accounts/{}/resource/{}", address, resource_type))?;
+
+        let response = self.inner.get(url).send().await?;
+        self.json(response).await
+    }
+
+    pub async fn get_account_resource_at_version(
+        &self,
+        address: AccountAddress,
+        resource_type: &str,
+        version: u64,
+    ) -> Result<Response<Option<Resource>>> {
+        let url = self.base_url.join(&format!(
+            "accounts/{}/resource/{}?version={}",
+            address, resource_type, version
+        ))?;
 
         let response = self.inner.get(url).send().await?;
         self.json(response).await
@@ -363,5 +396,11 @@ impl Client {
         }
 
         Ok(())
+    }
+}
+
+impl From<(ReqwestClient, Url)> for Client {
+    fn from((inner, base_url): (ReqwestClient, Url)) -> Self {
+        Client { inner, base_url }
     }
 }

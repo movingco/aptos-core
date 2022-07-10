@@ -12,31 +12,29 @@ use crate::{
         jellyfish_merkle_node::JellyfishMerkleNodeSchema, stale_node_index::StaleNodeIndexSchema,
         state_value::StateValueSchema,
     },
+    state_merkle_db::{add_node_batch, StateMerkleDb},
     AptosDbError, OTHER_TIMERS_SECONDS,
 };
 use anyhow::{anyhow, ensure, format_err, Result};
 use aptos_crypto::{hash::CryptoHash, HashValue};
 use aptos_jellyfish_merkle::{
     iterator::JellyfishMerkleIterator, node_type::NodeKey, restore::StateSnapshotRestore,
-    JellyfishMerkleTree, StateValueWriter, TreeReader, TreeWriter,
+    StateValueWriter,
 };
 use aptos_types::{
-    nibble::{nibble_path::NibblePath, ROOT_NIBBLE_HEIGHT},
+    nibble::nibble_path::NibblePath,
     proof::{SparseMerkleProof, SparseMerkleRangeProof},
     state_store::{
         state_key::StateKey,
         state_key_prefix::StateKeyPrefix,
         state_value::{StateValue, StateValueChunkWithProof},
     },
-    transaction::{Version, PRE_GENESIS_VERSION},
+    transaction::Version,
 };
 use schemadb::{ReadOptions, SchemaBatch, DB};
 use std::{collections::HashMap, sync::Arc};
 use storage_interface::{DbReader, StateSnapshotReceiver};
 
-type LeafNode = aptos_jellyfish_merkle::node_type::LeafNode<StateKey>;
-type Node = aptos_jellyfish_merkle::node_type::Node<StateKey>;
-type NodeBatch = aptos_jellyfish_merkle::NodeBatch<StateKey>;
 type StateValueBatch = aptos_jellyfish_merkle::StateValueBatch<StateKey, StateValue>;
 
 pub const MAX_VALUES_TO_FETCH_FOR_KEY_PREFIX: usize = 10_000;
@@ -44,7 +42,7 @@ pub const MAX_VALUES_TO_FETCH_FOR_KEY_PREFIX: usize = 10_000;
 #[derive(Debug)]
 pub(crate) struct StateStore {
     ledger_db: Arc<DB>,
-    state_merkle_db: Arc<DB>,
+    pub state_merkle_db: Arc<StateMerkleDb>,
 }
 
 // "using an Arc<dyn DbReader> as an Arc<dyn StateReader>" is not allowed in stable Rust. Actually we
@@ -52,21 +50,14 @@ pub(crate) struct StateStore {
 // upcasting coercion for now. Should change it to a different trait once upcasting is stablized.
 // ref: https://github.com/rust-lang/rust/issues/65991
 impl DbReader for StateStore {
-    /// Get the state value with proof given the state key and version
-    fn get_state_value_with_proof_by_version(
+    /// Returns the latest state snapshot strictly before `next_version` if any.
+    fn get_state_snapshot_before(
         &self,
-        state_key: &StateKey,
-        version: Version,
-    ) -> Result<(Option<StateValue>, SparseMerkleProof)> {
-        let (leaf_data, proof) =
-            JellyfishMerkleTree::new(self).get_with_proof(state_key.hash(), version)?;
-        Ok((
-            match leaf_data {
-                Some((_, (key, version))) => Some(self.expect_value_by_version(&key, version)?),
-                None => None,
-            },
-            proof,
-        ))
+        next_version: Version,
+    ) -> Result<Option<(Version, HashValue)>> {
+        self.get_state_snapshot_version_before(next_version)?
+            .map(|ver| Ok((ver, self.get_root_hash(ver)?)))
+            .transpose()
     }
 
     /// Get the lastest state value of the given key up to the given version. Only used for testing for now
@@ -85,23 +76,33 @@ impl DbReader for StateStore {
         iter.next()
             .transpose()?
             .map(|(_, state_value)| Ok(state_value))
-            // A hack to deal with PRE_GENESIS_VERSION
-            .or_else(|| {
-                self.ledger_db
-                    .get::<StateValueSchema>(&(state_key.clone(), PRE_GENESIS_VERSION))
-                    .transpose()
-            })
             .transpose()
     }
 
-    /// Returns the latest state snapshot strictly before `next_version` if any.
-    fn get_state_snapshot_before(
+    /// Returns the proof of the given state key and version.
+    fn get_state_proof_by_version(
         &self,
-        next_version: Version,
-    ) -> Result<Option<(Version, HashValue)>> {
-        self.get_state_snapshot_version_before(next_version)?
-            .map(|ver| Ok((ver, self.get_root_hash(ver)?)))
-            .transpose()
+        state_key: &StateKey,
+        version: Version,
+    ) -> Result<SparseMerkleProof> {
+        let (_, proof) = self.state_merkle_db.get_with_proof(state_key, version)?;
+        Ok(proof)
+    }
+
+    /// Get the state value with proof given the state key and version
+    fn get_state_value_with_proof_by_version(
+        &self,
+        state_key: &StateKey,
+        version: Version,
+    ) -> Result<(Option<StateValue>, SparseMerkleProof)> {
+        let (leaf_data, proof) = self.state_merkle_db.get_with_proof(state_key, version)?;
+        Ok((
+            match leaf_data {
+                Some((_, (key, version))) => Some(self.expect_value_by_version(&key, version)?),
+                None => None,
+            },
+            proof,
+        ))
     }
 }
 
@@ -109,15 +110,11 @@ impl StateStore {
     pub fn new(ledger_db: Arc<DB>, state_merkle_db: Arc<DB>) -> Self {
         Self {
             ledger_db,
-            state_merkle_db,
+            state_merkle_db: Arc::new(StateMerkleDb::new(state_merkle_db)),
         }
     }
 
     fn get_state_snapshot_version_before(&self, next_version: Version) -> Result<Option<Version>> {
-        ensure!(
-            next_version != PRE_GENESIS_VERSION,
-            "Nothing before pre-genesis"
-        );
         if next_version > 0 {
             let max_possible_version = next_version - 1;
             let mut iter = self
@@ -130,11 +127,8 @@ impl StateStore {
                 return Ok(Some(key.version()));
             }
         }
-        // try PRE_GENESIS
-        Ok(self
-            .state_merkle_db
-            .get::<JellyfishMerkleNodeSchema>(&NodeKey::new_empty_path(PRE_GENESIS_VERSION))?
-            .map(|_pre_genesis_root| PRE_GENESIS_VERSION))
+        // No version before genesis.
+        Ok(None)
     }
 
     /// Returns the key, value pairs for a particular state key prefix at at desired version. This
@@ -216,7 +210,7 @@ impl StateStore {
         rightmost_key: HashValue,
         version: Version,
     ) -> Result<SparseMerkleRangeProof> {
-        JellyfishMerkleTree::new(self).get_range_proof(rightmost_key, version)
+        self.state_merkle_db.get_range_proof(rightmost_key, version)
     }
 
     /// Put the `value_state_sets` into its own CF.
@@ -251,12 +245,8 @@ impl StateStore {
                 .with_label_values(&["jmt_update"])
                 .start_timer();
 
-            JellyfishMerkleTree::new(self).batch_put_value_set(
-                value_set,
-                node_hashes,
-                base_version,
-                version,
-            )
+            self.state_merkle_db
+                .batch_put_value_set(value_set, node_hashes, base_version, version)
         }?;
 
         let mut batch = SchemaBatch::new();
@@ -289,41 +279,11 @@ impl StateStore {
     }
 
     pub fn get_root_hash(&self, version: Version) -> Result<HashValue> {
-        JellyfishMerkleTree::new(self).get_root_hash(version)
-    }
-
-    pub fn get_root_hash_option(&self, version: Version) -> Result<Option<HashValue>> {
-        JellyfishMerkleTree::new(self).get_root_hash_option(version)
-    }
-
-    /// Finds the rightmost leaf by scanning the entire DB.
-    #[cfg(test)]
-    pub fn get_rightmost_leaf_naive(&self) -> Result<Option<(NodeKey, LeafNode)>> {
-        let mut ret = None;
-
-        let mut iter = self
-            .state_merkle_db
-            .iter::<JellyfishMerkleNodeSchema>(Default::default())?;
-        iter.seek_to_first();
-
-        while let Some((node_key, node)) = iter.next().transpose()? {
-            if let Node::Leaf(leaf_node) = node {
-                match ret {
-                    None => ret = Some((node_key, leaf_node)),
-                    Some(ref other) => {
-                        if leaf_node.account_key() > other.1.account_key() {
-                            ret = Some((node_key, leaf_node));
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(ret)
+        self.state_merkle_db.get_root_hash(version)
     }
 
     pub fn get_value_count(&self, version: Version) -> Result<usize> {
-        JellyfishMerkleTree::new(self).get_leaf_count(version)
+        self.state_merkle_db.get_leaf_count(version)
     }
 
     pub fn get_state_key_and_value_iter(
@@ -332,16 +292,17 @@ impl StateStore {
         start_hashed_key: HashValue,
     ) -> Result<impl Iterator<Item = Result<(StateKey, StateValue)>> + Send + Sync> {
         let store = Arc::clone(self);
-        Ok(
-            JellyfishMerkleIterator::new(Arc::clone(self), version, start_hashed_key)?.map(
-                move |res| match res {
-                    Ok((_hashed_key, (key, version))) => {
-                        Ok((key.clone(), store.expect_value_by_version(&key, version)?))
-                    }
-                    Err(err) => Err(err),
-                },
-            ),
-        )
+        Ok(JellyfishMerkleIterator::new(
+            Arc::clone(&self.state_merkle_db),
+            version,
+            start_hashed_key,
+        )?
+        .map(move |res| match res {
+            Ok((_hashed_key, (key, version))) => {
+                Ok((key.clone(), store.expect_value_by_version(&key, version)?))
+            }
+            Err(err) => Err(err),
+        }))
     }
 
     pub fn get_value_chunk_with_proof(
@@ -350,9 +311,12 @@ impl StateStore {
         first_index: usize,
         chunk_size: usize,
     ) -> Result<StateValueChunkWithProof> {
-        let result_iter =
-            JellyfishMerkleIterator::new_by_index(Arc::clone(self), version, first_index)?
-                .take(chunk_size);
+        let result_iter = JellyfishMerkleIterator::new_by_index(
+            Arc::clone(&self.state_merkle_db),
+            version,
+            first_index,
+        )?
+        .take(chunk_size);
         let state_key_values: Vec<(StateKey, StateValue)> = result_iter
             .into_iter()
             .map(|res| {
@@ -388,86 +352,11 @@ impl StateStore {
         expected_root_hash: HashValue,
     ) -> Result<Box<dyn StateSnapshotReceiver<StateKey, StateValue>>> {
         Ok(Box::new(StateSnapshotRestore::new_overwrite(
-            Arc::clone(self),
+            &self.state_merkle_db,
+            self,
             version,
             expected_root_hash,
         )?))
-    }
-}
-
-impl TreeReader<StateKey> for StateStore {
-    fn get_node_option(&self, node_key: &NodeKey) -> Result<Option<Node>> {
-        self.state_merkle_db
-            .get::<JellyfishMerkleNodeSchema>(node_key)
-    }
-
-    fn get_rightmost_leaf(&self) -> Result<Option<(NodeKey, LeafNode)>> {
-        // Since everything has the same version during restore, we seek to the first node and get
-        // its version.
-        let mut iter = self
-            .state_merkle_db
-            .iter::<JellyfishMerkleNodeSchema>(Default::default())?;
-        iter.seek_to_first();
-        let version = match iter.next().transpose()? {
-            Some((node_key, _node)) => node_key.version(),
-            None => return Ok(None),
-        };
-
-        // The encoding of key and value in DB looks like:
-        //
-        // | <-------------- key --------------> | <- value -> |
-        // | version | num_nibbles | nibble_path |    node     |
-        //
-        // Here version is fixed. For each num_nibbles, there could be a range of nibble paths
-        // of the same length. If one of them is the rightmost leaf R, it must be at the end of this
-        // range. Otherwise let's assume the R is in the middle of the range, so we
-        // call the node at the end of this range X:
-        //   1. If X is leaf, then X.account_key() > R.account_key(), because the nibble path is a
-        //      prefix of the account key. So R is not the rightmost leaf.
-        //   2. If X is internal node, then X must be on the right side of R, so all its children's
-        //      account keys are larger than R.account_key(). So R is not the rightmost leaf.
-        //
-        // Given that num_nibbles ranges from 0 to ROOT_NIBBLE_HEIGHT, there are only
-        // ROOT_NIBBLE_HEIGHT+1 ranges, so we can just find the node at the end of each range and
-        // then pick the one with the largest account key.
-        let mut ret = None;
-
-        for num_nibbles in 1..=ROOT_NIBBLE_HEIGHT + 1 {
-            let mut iter = self
-                .state_merkle_db
-                .iter::<JellyfishMerkleNodeSchema>(Default::default())?;
-            // nibble_path is always non-empty except for the root, so if we use an empty nibble
-            // path as the seek key, the iterator will end up pointing to the end of the previous
-            // range.
-            let seek_key = (version, num_nibbles as u8);
-            iter.seek_for_prev(&seek_key)?;
-
-            if let Some((node_key, node)) = iter.next().transpose()? {
-                debug_assert_eq!(node_key.version(), version);
-                debug_assert!(node_key.nibble_path().num_nibbles() < num_nibbles);
-
-                if let Node::Leaf(leaf_node) = node {
-                    match ret {
-                        None => ret = Some((node_key, leaf_node)),
-                        Some(ref other) => {
-                            if leaf_node.account_key() > other.1.account_key() {
-                                ret = Some((node_key, leaf_node));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(ret)
-    }
-}
-
-impl TreeWriter<StateKey> for StateStore {
-    fn write_node_batch(&self, node_batch: &NodeBatch) -> Result<()> {
-        let mut batch = SchemaBatch::new();
-        add_node_batch(&mut batch, node_batch.iter())?;
-        self.state_merkle_db.write_schemas(batch)
     }
 }
 
@@ -477,14 +366,6 @@ impl StateValueWriter<StateKey, StateValue> for StateStore {
         add_kv_batch(&mut batch, node_batch)?;
         self.ledger_db.write_schemas(batch)
     }
-}
-
-fn add_node_batch<'a>(
-    batch: &'a mut SchemaBatch,
-    mut node_batch: impl Iterator<Item = (&'a NodeKey, &'a Node)>,
-) -> Result<()> {
-    node_batch
-        .try_for_each(|(node_key, node)| batch.put::<JellyfishMerkleNodeSchema>(node_key, node))
 }
 
 fn add_kv_batch(batch: &mut SchemaBatch, kv_batch: &StateValueBatch) -> Result<()> {

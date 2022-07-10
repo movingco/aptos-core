@@ -6,14 +6,14 @@ mod aptos_debug_natives;
 use crate::{
     common::{
         types::{
-            load_account_arg, AccountAddressWrapper, CliError, CliTypedResult, EncodingOptions,
-            MovePackageDir, ProfileOptions, PromptOptions, TransactionSummary,
-            WriteTransactionOptions,
+            load_account_arg, AccountAddressWrapper, CliError, CliTypedResult, MovePackageDir,
+            PromptOptions, TransactionOptions, TransactionSummary,
         },
-        utils::{check_if_file_exists, submit_transaction},
+        utils::check_if_file_exists,
     },
     CliCommand, CliResult,
 };
+use aptos_module_verifier::module_init::verify_module_init_function;
 use aptos_rest_client::aptos_api_types::MoveType;
 use aptos_types::transaction::{ModuleBundle, ScriptFunction, TransactionPayload};
 use async_trait::async_trait;
@@ -169,11 +169,11 @@ impl CliCommand<Vec<String>> for CompilePackage {
         };
         let compiled_package = compile_move(build_config, self.move_options.package_dir.as_path())?;
         let mut ids = Vec::new();
-        compiled_package
-            .root_modules_map()
-            .iter_modules()
-            .iter()
-            .for_each(|module| ids.push(module.self_id().to_string()));
+        for &module in compiled_package.root_modules_map().iter_modules().iter() {
+            verify_module_init_function(module)
+                .map_err(|e| CliError::MoveCompilationError(e.to_string()))?;
+            ids.push(module.self_id().to_string());
+        }
         Ok(ids)
     }
 }
@@ -234,13 +234,9 @@ fn compile_move(build_config: BuildConfig, package_dir: &Path) -> CliTypedResult
 #[derive(Parser)]
 pub struct PublishPackage {
     #[clap(flatten)]
-    encoding_options: EncodingOptions,
-    #[clap(flatten)]
     move_options: MovePackageDir,
     #[clap(flatten)]
-    write_options: WriteTransactionOptions,
-    #[clap(flatten)]
-    profile_options: ProfileOptions,
+    txn_options: TransactionOptions,
 }
 
 #[async_trait]
@@ -267,27 +263,14 @@ impl CliCommand<TransactionSummary> for PublishPackage {
                     .serialize(get_bytecode_version_from_env())
             })
             .collect();
-        let compiled_payload = TransactionPayload::ModuleBundle(ModuleBundle::new(compiled_units));
 
-        // Now that it's compiled, lets send it
-        let sender_key = self.write_options.private_key_options.extract_private_key(
-            self.encoding_options.encoding,
-            &self.profile_options.profile,
-        )?;
-
-        submit_transaction(
-            self.write_options
-                .rest_options
-                .url(&self.profile_options.profile)?,
-            self.write_options
-                .chain_id(&self.profile_options.profile)
-                .await?,
-            sender_key,
-            compiled_payload,
-            self.write_options.max_gas,
-        )
-        .await
-        .map(TransactionSummary::from)
+        // Send the compiled module
+        self.txn_options
+            .submit_transaction(TransactionPayload::ModuleBundle(ModuleBundle::new(
+                compiled_units,
+            )))
+            .await
+            .map(TransactionSummary::from)
     }
 }
 
@@ -295,11 +278,7 @@ impl CliCommand<TransactionSummary> for PublishPackage {
 #[derive(Parser)]
 pub struct RunFunction {
     #[clap(flatten)]
-    encoding_options: EncodingOptions,
-    #[clap(flatten)]
-    write_options: WriteTransactionOptions,
-    #[clap(flatten)]
-    profile_options: ProfileOptions,
+    txn_options: TransactionOptions,
     /// Function name as `<ADDRESS>::<MODULE_ID>::<FUNCTION_NAME>`
     ///
     /// Example: `0x842ed41fad9640a2ad08fdd7d3e4f7f505319aac7d67e1c0dd6a7cce8732c7e3::Message::set_message`
@@ -338,29 +317,15 @@ impl CliCommand<TransactionSummary> for RunFunction {
             type_args.push(type_tag)
         }
 
-        let script_function = ScriptFunction::new(
-            self.function_id.module_id.clone(),
-            self.function_id.function_id.clone(),
-            type_args,
-            args,
-        );
-
-        submit_transaction(
-            self.write_options
-                .rest_options
-                .url(&self.profile_options.profile)?,
-            self.write_options
-                .chain_id(&self.profile_options.profile)
-                .await?,
-            self.write_options.private_key_options.extract_private_key(
-                self.encoding_options.encoding,
-                &self.profile_options.profile,
-            )?,
-            TransactionPayload::ScriptFunction(script_function),
-            self.write_options.max_gas,
-        )
-        .await
-        .map(TransactionSummary::from)
+        self.txn_options
+            .submit_transaction(TransactionPayload::ScriptFunction(ScriptFunction::new(
+                self.function_id.module_id.clone(),
+                self.function_id.function_id.clone(),
+                type_args,
+                args,
+            )))
+            .await
+            .map(TransactionSummary::from)
     }
 }
 

@@ -1,7 +1,6 @@
 module AptosFramework::Account {
     use Std::BCS;
     use Std::Errors;
-    use Std::GUID;
     use Std::Hash;
     use Std::Signer;
     use Std::Vector;
@@ -72,6 +71,11 @@ module AptosFramework::Account {
     const PROLOGUE_EINVALID_WRITESET_SENDER: u64 = 1010;
     const PROLOGUE_ESEQUENCE_NUMBER_TOO_BIG: u64 = 1011;
     const PROLOGUE_ESECONDARY_KEYS_ADDRESSES_COUNT_MISMATCH: u64 = 1012;
+
+    #[test_only]
+    public fun create_address_for_test(bytes: vector<u8>): address {
+        create_address(bytes)
+    }
 
     native fun create_address(bytes: vector<u8>): address;
     native fun create_signer(addr: address): signer;
@@ -352,36 +356,12 @@ module AptosFramework::Account {
     }
 
     /// A resource account is used to manage resources independent of an account managed by a user.
-    /// Some applications might include managing a Dao and the resources associated with the Dao or
-    /// a liquidity pool to create new liquidity pool coins without requiring the original account
-    /// owner to setup the resources. While one could theoretically manage a lot of this via
-    /// capabilities, the `move_to` semantics insist on a signer and cannot work with capabilities
-    /// due to Move requirements that `move_to` be executed on a resource within the same module
-    /// that defines that resource.
-    ///
-    /// As a small example:
-    /// ```
-    /// let (signer, cap) = create_resource_account(&source);
-    /// let lp = LiquidityPool { signer_cap: cap, ... };
-    /// move_to(&signer, lp);
-    /// ```
-    ///
-    /// Later on during a coin registration:
-    /// ```
-    /// public fun add_coin<X, Y>(lp: &LP, x: Coin<x>, y: Coin<y>) {
-    ///     if(!exists<LiquidityCoin<X, Y>(LP::Address(lp), LiquidityCoin<X, Y>)) {
-    ///         let mint, burn = Coin::initialize<LiquidityCoin<X, Y>>(...);
-    ///         move_to(&create_signer_with_capability(&lp.cap), LiquidityCoin<X, Y>{ mint, burn });
-    ///     }
-    ///     ...
-    /// }
-    /// ```
     public fun create_resource_account(
         source: &signer,
+        seed: vector<u8>,
     ): (signer, SignerCapability) {
-        let guid = GUID::create(source);
-        let bytes = BCS::to_bytes(&guid);
-        Vector::append(&mut bytes, BCS::to_bytes(&Timestamp::now_microseconds()));
+        let bytes = BCS::to_bytes(&Signer::address_of(source));
+        Vector::append(&mut bytes, seed);
         let addr = create_address(Hash::sha3_256(bytes));
 
         let signer = create_account_internal(copy addr);
@@ -404,13 +384,9 @@ module AptosFramework::Account {
         create_signer(*addr)
     }
 
-    #[test(core_resources = @CoreResources, user = @0x1)]
-    public(script) fun test_create_resource_account(
-        core_resources: signer,
-        user: signer,
-    ) {
-        Timestamp::set_time_has_started_for_testing(&core_resources);
-        let (resource_account, _) = create_resource_account(&user);
+    #[test(user = @0x1)]
+    public(script) fun test_create_resource_account(user: signer) {
+        let (resource_account, _) = create_resource_account(&user, x"01");
         assert!(Signer::address_of(&resource_account) != Signer::address_of(&user), 0);
         Coin::register<TestCoin>(&resource_account);
     }
@@ -418,13 +394,9 @@ module AptosFramework::Account {
     #[test_only]
     struct DummyResource has key { }
 
-    #[test(core_resources = @CoreResources, user = @0x1)]
-    public(script) fun test_module_capability(
-        core_resources: signer,
-        user: signer,
-    ) acquires DummyResource {
-        Timestamp::set_time_has_started_for_testing(&core_resources);
-        let (resource_account, signer_cap) = create_resource_account(&user);
+    #[test(user = @0x1)]
+    public(script) fun test_module_capability(user: signer) acquires DummyResource {
+        let (resource_account, signer_cap) = create_resource_account(&user, x"01");
         assert!(Signer::address_of(&resource_account) != Signer::address_of(&user), 0);
 
         let resource_account_from_cap = create_signer_with_capability(&signer_cap);

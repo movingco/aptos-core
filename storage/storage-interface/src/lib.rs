@@ -39,6 +39,7 @@ use std::{collections::HashMap, sync::Arc};
 use thiserror::Error;
 
 pub mod cached_state_view;
+mod executed_trees;
 pub mod in_memory_state;
 #[cfg(any(feature = "testing", feature = "fuzzing"))]
 pub mod mock;
@@ -46,6 +47,9 @@ pub mod no_proof_fetcher;
 pub mod proof_fetcher;
 pub mod state_view;
 pub mod sync_proof_fetcher;
+
+pub use executed_trees::ExecutedTrees;
+use scratchpad::SparseMerkleTree;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StartupInfo {
@@ -145,7 +149,6 @@ impl TreeState {
             num_transactions,
             ledger_frozen_subtree_hashes,
             state_checkpoint_hash: state_root_hash,
-            // Doesn't consider the possibility of PRE_GENESIS exists
             state_checkpoint_version: num_transactions.checked_sub(1),
         }
     }
@@ -456,6 +459,15 @@ pub trait DbReader: Send + Sync {
         unimplemented!()
     }
 
+    /// Returns the proof of the given state key and version.
+    fn get_state_proof_by_version(
+        &self,
+        state_key: &StateKey,
+        version: Version,
+    ) -> Result<SparseMerkleProof> {
+        unimplemented!()
+    }
+
     /// Gets a state value by state key along with the proof, out of the ledger state indicated by the state
     /// Merkle tree root with a sparse merkle proof proving state tree root.
     /// See [AptosDB::get_account_state_with_proof_by_version].
@@ -662,6 +674,7 @@ pub trait DbWriter: Send + Sync {
         base_state_version: Option<Version>,
         ledger_info_with_sigs: Option<&LedgerInfoWithSignatures>,
         save_state_snapshots: bool,
+        state_tree: SparseMerkleTree<StateValue>,
     ) -> Result<()> {
         unimplemented!()
     }
@@ -672,6 +685,7 @@ pub trait DbWriter: Send + Sync {
         first_version: Version,
         base_state_version: Option<Version>,
         ledger_info_with_sigs: Option<&LedgerInfoWithSignatures>,
+        state_tree: SparseMerkleTree<StateValue>,
     ) -> Result<()> {
         self.save_transactions_ext(
             txns_to_commit,
@@ -679,6 +693,7 @@ pub trait DbWriter: Send + Sync {
             base_state_version,
             ledger_info_with_sigs,
             true, /* save_state_snapshots */
+            state_tree,
         )
     }
 
@@ -692,6 +707,7 @@ pub trait DbWriter: Send + Sync {
         node_hashes: Option<&HashMap<NibblePath, HashValue>>,
         version: Version,
         base_version: Option<Version>,
+        state_tree_at_snapshot: SparseMerkleTree<StateValue>,
     ) -> Result<()> {
         unimplemented!()
     }

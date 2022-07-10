@@ -45,8 +45,11 @@ spec:
     port: 80
     targetPort: 8180
   {{- end }}
-  type: {{ $.Values.service.external.type }}
-  externalTrafficPolicy: Local
+  type: {{ $.Values.service.validator.external.type }}
+  # Use externalTrafficPolicy if service type is LoadBalancer or Nodeport
+  {{- if and (ne "ClusterIP" $.Values.service.validator.external.type) $.Values.service.validator.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ $.Values.service.validator.externalTrafficPolicy }}
+  {{- end }}
   {{- with $.Values.service.validator.loadBalancerSourceRanges }}
   loadBalancerSourceRanges:
     {{- toYaml . | nindent 4 }}
@@ -90,8 +93,11 @@ spec:
     targetPort: {{ add 8443 $index }}
   {{- end }}
   {{- end }}
-  type: {{ $.Values.service.external.type }}
-  externalTrafficPolicy: Local
+  type: {{ $.Values.service.fullnode.external.type }}
+  # Use externalTrafficPolicy if service type is LoadBalancer or Nodeport
+  {{- if and (ne "ClusterIP" $.Values.service.fullnode.external.type) $.Values.service.fullnode.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ $.Values.service.fullnode.externalTrafficPolicy }}
+  {{- end }}  
   {{- with (index $.Values.service $config.name).loadBalancerSourceRanges }}
   loadBalancerSourceRanges:
     {{- toYaml . | nindent 4 }}

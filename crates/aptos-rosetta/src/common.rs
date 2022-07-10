@@ -6,11 +6,17 @@ use crate::{
     types::NetworkIdentifier,
     RosettaContext,
 };
-use aptos_rest_client::{aptos::Balance, Account, Response, Transaction};
+use aptos_crypto::ValidCryptoMaterial;
+use aptos_logger::debug;
+use aptos_rest_client::{aptos::Balance, Account, Response};
 use aptos_types::{account_address::AccountAddress, chain_id::ChainId};
 use futures::future::BoxFuture;
-use serde::{Deserialize, Serialize};
-use std::{convert::Infallible, future::Future, str::FromStr};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::{
+    convert::{Infallible, TryInto},
+    future::Future,
+    str::FromStr,
+};
 use warp::Filter;
 
 pub const BLOCKCHAIN: &str = "aptos";
@@ -21,7 +27,8 @@ pub fn check_network(
     server_context: &RosettaContext,
 ) -> ApiResult<()> {
     if network_identifier.blockchain == BLOCKCHAIN
-        || ChainId::from_str(network_identifier.network.trim())? == server_context.chain_id
+        || ChainId::from_str(network_identifier.network.trim()).map_err(|_| ApiError::BadNetwork)?
+            == server_context.chain_id
     {
         Ok(())
     } else {
@@ -55,16 +62,23 @@ where
     F: FnOnce(Req, RosettaContext) -> R + Clone + Copy + Send + 'static,
     R: Future<Output = Result<Resp, ApiError>> + Send,
     Req: Deserialize<'a> + Send + 'static,
-    Resp: Serialize,
+    Resp: std::fmt::Debug + Serialize,
 {
     move |request, options| {
         let fut = async move {
             match handler(request, options).await {
-                Ok(response) => Ok(warp::reply::with_status(
-                    warp::reply::json(&response),
-                    warp::http::StatusCode::OK,
-                )),
+                Ok(response) => {
+                    debug!(
+                        "Response: {}",
+                        serde_json::to_string_pretty(&response).unwrap()
+                    );
+                    Ok(warp::reply::with_status(
+                        warp::reply::json(&response),
+                        warp::http::StatusCode::OK,
+                    ))
+                }
                 Err(api_error) => {
+                    debug!("Error: {:?}", api_error);
                     let status = api_error.status_code();
                     Ok(warp::reply::with_status(
                         warp::reply::json(&api_error.into_error()),
@@ -97,14 +111,33 @@ pub async fn get_account_balance(
         .map_err(|_| ApiError::AccountNotFound)
 }
 
-pub async fn get_genesis_transaction(
-    rest_client: &aptos_rest_client::Client,
-) -> ApiResult<Response<Transaction>> {
-    Ok(rest_client.get_transaction_by_version(0).await?)
-}
-
 /// Retrieve the timestamp according ot the Rosetta spec (milliseconds)
 pub fn get_timestamp<T>(response: &Response<T>) -> u64 {
     // note: timestamps are in microseconds, so we convert to milliseconds
     response.state().timestamp_usecs / 1000
+}
+
+/// Strips the `0x` prefix on hex strings
+pub fn strip_hex_prefix(str: &str) -> &str {
+    str.strip_prefix("0x").unwrap_or(str)
+}
+
+pub fn encode_bcs<T: Serialize>(obj: &T) -> ApiResult<String> {
+    let bytes = bcs::to_bytes(obj)?;
+    Ok(hex::encode(bytes))
+}
+
+pub fn decode_bcs<T: DeserializeOwned>(str: &str, type_name: &'static str) -> ApiResult<T> {
+    let bytes = hex::decode(str)?;
+    bcs::from_bytes(&bytes).map_err(|_| ApiError::deserialization_failed(type_name))
+}
+
+pub fn decode_key<T: DeserializeOwned + ValidCryptoMaterial>(
+    str: &str,
+    type_name: &'static str,
+) -> ApiResult<T> {
+    hex::decode(str)?
+        .as_slice()
+        .try_into()
+        .map_err(|_| ApiError::deserialization_failed(type_name))
 }

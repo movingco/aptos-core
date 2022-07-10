@@ -7,7 +7,8 @@ Rails.application.routes.draw do
   devise_for :users, {
     controllers: {
       omniauth_callbacks: 'users/omniauth_callbacks',
-      sessions: 'users/sessions'
+      sessions: 'users/sessions',
+      confirmations: 'users/confirmations'
     }
   }
   ActiveAdmin.routes(self)
@@ -15,7 +16,7 @@ Rails.application.routes.draw do
   # Define your application routes per the DSL in https://guides.rubyonrails.org/routing.html
 
   namespace :user do
-    root to: redirect('/it1') # creates user_root_path, where users go after confirming email
+    root to: redirect('/it2') # creates user_root_path, where users go after confirming email
   end
 
   # Settings
@@ -24,6 +25,10 @@ Rails.application.routes.draw do
   patch 'settings/profile', to: 'settings#profile_update'
   get 'settings/connections'
   delete 'settings/connections', to: 'settings#connections_delete'
+  delete 'settings/delete_account', to: 'settings#delete_account'
+
+  # Discourse SSO
+  get 'discourse/sso', to: 'discourse#sso'
 
   # KYC routes
   get 'onboarding/kyc_redirect', to: 'onboarding#kyc_redirect'
@@ -36,6 +41,7 @@ Rails.application.routes.draw do
   get 'health', to: 'health#health'
 
   resources :it2_profiles, except: %i[index destroy]
+  resources :it2_surveys, except: %i[index destroy]
   resource :it2, only: %i[show]
 
   resources :nfts, only: %i[show update]
@@ -46,5 +52,5 @@ Rails.application.routes.draw do
   get 'leaderboard/it1', to: redirect('/it1')
 
   get 'it1', to: 'leaderboard#it1'
-  root 'welcome#index'
+  root 'static_page#community'
 end

@@ -24,6 +24,7 @@ mod event_store;
 mod ledger_counters;
 mod ledger_store;
 mod pruner;
+mod state_merkle_db;
 mod state_store;
 mod system_store;
 mod transaction_store;
@@ -53,7 +54,7 @@ use crate::{
     transaction_store::TransactionStore,
 };
 use anyhow::{ensure, Result};
-use aptos_config::config::{RocksdbConfig, StoragePrunerConfig, NO_OP_STORAGE_PRUNER_CONFIG};
+use aptos_config::config::{RocksdbConfigs, StoragePrunerConfig, NO_OP_STORAGE_PRUNER_CONFIG};
 use aptos_crypto::hash::{HashValue, SPARSE_MERKLE_PLACEHOLDER_HASH};
 use aptos_infallible::Mutex;
 use aptos_logger::prelude::*;
@@ -77,13 +78,14 @@ use aptos_types::{
     transaction::{
         AccountTransactionsWithProof, Transaction, TransactionInfo, TransactionListWithProof,
         TransactionOutput, TransactionOutputListWithProof, TransactionToCommit,
-        TransactionWithProof, Version, PRE_GENESIS_VERSION,
+        TransactionWithProof, Version,
     },
     write_set::WriteSet,
 };
 use itertools::zip_eq;
 use once_cell::sync::Lazy;
 use schemadb::{SchemaBatch, DB};
+use scratchpad::SparseMerkleTree;
 use std::{
     collections::HashMap,
     iter::Iterator,
@@ -303,7 +305,7 @@ impl AptosDB {
         db_root_path: P,
         readonly: bool,
         storage_pruner_config: StoragePrunerConfig,
-        rocksdb_config: RocksdbConfig,
+        rocksdb_configs: RocksdbConfigs,
     ) -> Result<Self> {
         ensure!(
             storage_pruner_config.eq(&NO_OP_STORAGE_PRUNER_CONFIG) || !readonly,
@@ -314,35 +316,31 @@ impl AptosDB {
         let state_merkle_db_path = db_root_path.as_ref().join(STATE_MERKLE_DB_NAME);
         let instant = Instant::now();
 
-        let mut db_opts = gen_rocksdb_options(&rocksdb_config);
-
         let (ledger_db, state_merkle_db) = if readonly {
             (
                 DB::open_cf_readonly(
-                    &db_opts,
+                    &gen_rocksdb_options(&rocksdb_configs.ledger_db_config, true),
                     ledger_db_path.clone(),
                     "ledger_db_ro",
                     ledger_db_column_families(),
                 )?,
                 DB::open_cf_readonly(
-                    &db_opts,
+                    &gen_rocksdb_options(&rocksdb_configs.state_merkle_db_config, true),
                     state_merkle_db_path.clone(),
                     "state_merkle_db_ro",
                     state_merkle_db_column_families(),
                 )?,
             )
         } else {
-            db_opts.create_if_missing(true);
-            db_opts.create_missing_column_families(true);
             (
                 DB::open_cf(
-                    &db_opts,
+                    &gen_rocksdb_options(&rocksdb_configs.ledger_db_config, false),
                     ledger_db_path.clone(),
                     "ledger_db",
                     gen_ledger_cfds(),
                 )?,
                 DB::open_cf(
-                    &db_opts,
+                    &gen_rocksdb_options(&rocksdb_configs.state_merkle_db_config, false),
                     state_merkle_db_path.clone(),
                     "state_merkle_db",
                     gen_state_merkle_cfds(),
@@ -364,7 +362,7 @@ impl AptosDB {
         db_root_path: P,
         ledger_db_secondary_path: P,
         state_merkle_db_secondary_path: P,
-        mut rocksdb_config: RocksdbConfig,
+        mut rocksdb_configs: RocksdbConfigs,
     ) -> Result<Self> {
         let ledger_db_primary_path = db_root_path.as_ref().join(LEDGER_DB_NAME);
         let ledger_db_secondary_path = ledger_db_secondary_path.as_ref().to_path_buf();
@@ -372,19 +370,19 @@ impl AptosDB {
         let state_merkle_db_secondary_path = state_merkle_db_secondary_path.as_ref().to_path_buf();
 
         // Secondary needs `max_open_files = -1` per https://github.com/facebook/rocksdb/wiki/Secondary-instance
-        rocksdb_config.max_open_files = -1;
-        let db_opts = gen_rocksdb_options(&rocksdb_config);
+        rocksdb_configs.ledger_db_config.max_open_files = -1;
+        rocksdb_configs.state_merkle_db_config.max_open_files = -1;
 
         Ok(Self::new_with_dbs(
             DB::open_cf_as_secondary(
-                &db_opts,
+                &gen_rocksdb_options(&rocksdb_configs.ledger_db_config, false),
                 ledger_db_primary_path,
                 ledger_db_secondary_path,
                 "ledgerdb_sec",
                 ledger_db_column_families(),
             )?,
             DB::open_cf_as_secondary(
-                &db_opts,
+                &gen_rocksdb_options(&rocksdb_configs.state_merkle_db_config, false),
                 state_merkle_db_primary_path,
                 state_merkle_db_secondary_path,
                 "state_merkle_db_sec",
@@ -401,7 +399,7 @@ impl AptosDB {
             db_root_path,
             false,                       /* readonly */
             NO_OP_STORAGE_PRUNER_CONFIG, /* pruner */
-            RocksdbConfig::default(),
+            RocksdbConfigs::default(),
         )
         .expect("Unable to open AptosDB")
     }
@@ -1081,6 +1079,25 @@ impl DbReader for AptosDB {
         })
     }
 
+    /// Returns the proof of the given state key and version.
+    fn get_state_proof_by_version(
+        &self,
+        state_key: &StateKey,
+        version: Version,
+    ) -> Result<SparseMerkleProof> {
+        gauged_api("get_proof_by_version", || {
+            error_if_version_is_pruned(
+                &self.pruner,
+                PrunerIndex::StateStorePrunerIndex,
+                "State",
+                version,
+            )?;
+
+            self.state_store
+                .get_state_proof_by_version(state_key, version)
+        })
+    }
+
     fn get_startup_info(&self) -> Result<Option<StartupInfo>> {
         gauged_api("get_startup_info", || {
             self.ledger_store
@@ -1167,8 +1184,7 @@ impl DbReader for AptosDB {
 
     fn get_latest_state_checkpoint(&self) -> Result<Option<(Version, HashValue)>> {
         gauged_api("get_latest_state_checkpoint_version", || {
-            self.state_store
-                .get_state_snapshot_before(PRE_GENESIS_VERSION - 1)
+            self.state_store.get_state_snapshot_before(Version::MAX)
         })
     }
 
@@ -1259,6 +1275,7 @@ impl DbWriter for AptosDB {
         node_hashes: Option<&HashMap<NibblePath, HashValue>>,
         version: Version,
         base_version: Option<Version>,
+        _state_tree_at_snapshot: SparseMerkleTree<StateValue>,
     ) -> Result<()> {
         gauged_api("save_state_snapshot", || {
             let root_hash = self.state_store.merklize_value_set(
@@ -1289,6 +1306,7 @@ impl DbWriter for AptosDB {
         base_state_version: Option<Version>,
         ledger_info_with_sigs: Option<&LedgerInfoWithSignatures>,
         save_state_snapshots: bool,
+        state_tree: SparseMerkleTree<StateValue>,
     ) -> Result<()> {
         gauged_api("save_transactions", || {
             // Executing and committing from more than one threads not allowed -- consensus and
@@ -1340,7 +1358,13 @@ impl DbWriter for AptosDB {
                     })
                 {
                     let version = first_version + idx as LeafCount;
-                    self.save_state_snapshot(jmt_updates, jf_node_hashes, version, base_version)?;
+                    self.save_state_snapshot(
+                        jmt_updates,
+                        jf_node_hashes,
+                        version,
+                        base_version,
+                        state_tree.clone(),
+                    )?;
                     base_version = Some(version);
                 }
             }

@@ -35,7 +35,7 @@ source $HOME/.cargo/env
 2. Install the `aptos` CLI tool by running the below command.  You can run this command from any directory.  The `aptos`
    CLI tool will be installed into your `CARGO_HOME`, usually `~/.cargo`:
 ```bash
-cargo install --git https://github.com/aptos-labs/aptos-core.git aptos --tag aptos-cli-latest
+cargo install --git https://github.com/aptos-labs/aptos-core.git aptos --tag aptos-cli-0.2.0
 ```
 3. Confirm that the `aptos` CLI tool is installed successfully by running the below command.  The terminal will display
    the path to the `aptos` CLI's location.
@@ -48,7 +48,7 @@ which aptos
 Command line help is available.  Type `aptos help` or `aptos --help` to see the available command options.
 ```bash
 $ aptos help
-aptos 0.1.0
+aptos 0.2.0
 Aptos Labs <opensource@aptoslabs.com>
 CLI tool for interacting with the Aptos blockchain and nodes
 
@@ -72,7 +72,7 @@ SUBCOMMANDS:
 Command specific help is also available.  For example, type `aptos move --help` to get command-specific help.
 ```bash
 $ aptos move --help
-aptos-move 0.1.0
+aptos-move 0.2.0
 CLI tool for performing Move tasks
 
 USAGE:
@@ -94,7 +94,7 @@ SUBCOMMANDS:
 Help for sub-commands is also available.  For example, type `aptos move compile --help` to get command-specific help.
 ```bash
 $ aptos move compile --help
-aptos-move-compile 0.1.0
+aptos-move-compile 0.2.0
 Compiles a package and returns the [`ModuleId`]s
 
 USAGE:

@@ -56,12 +56,26 @@ impl Default for StateSyncConfig {
 }
 
 /// The bootstrapping mode determines how the node will bootstrap to the latest
-/// blockchain state, e.g., directly download the latest account states.
+/// blockchain state, e.g., directly download the latest states.
 #[derive(Copy, Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum BootstrappingMode {
     ApplyTransactionOutputsFromGenesis, // Applies transaction outputs (starting at genesis)
-    DownloadLatestAccountStates,        // Downloads the account states (at the latest version)
-    ExecuteTransactionsFromGenesis,     // Executes transactions (starting at genesis)
+    DownloadLatestStates, // Downloads the state keys and values (at the latest version)
+    ExecuteTransactionsFromGenesis, // Executes transactions (starting at genesis)
+}
+
+impl BootstrappingMode {
+    pub fn to_label(&self) -> &'static str {
+        match self {
+            BootstrappingMode::ApplyTransactionOutputsFromGenesis => {
+                "apply_transaction_outputs_from_genesis"
+            }
+            BootstrappingMode::DownloadLatestStates => "download_latest_states",
+            BootstrappingMode::ExecuteTransactionsFromGenesis => {
+                "execute_transactions_from_genesis"
+            }
+        }
+    }
 }
 
 /// The continuous syncing mode determines how the node will stay up-to-date
@@ -69,8 +83,17 @@ pub enum BootstrappingMode {
 /// continuously executing all transactions.
 #[derive(Copy, Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum ContinuousSyncingMode {
-    ExecuteTransactions,     // Executes transactions to stay up-to-date
     ApplyTransactionOutputs, // Applies transaction outputs to stay up-to-date
+    ExecuteTransactions,     // Executes transactions to stay up-to-date
+}
+
+impl ContinuousSyncingMode {
+    pub fn to_label(&self) -> &'static str {
+        match self {
+            ContinuousSyncingMode::ApplyTransactionOutputs => "apply_transaction_outputs",
+            ContinuousSyncingMode::ExecuteTransactions => "execute_transactions",
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -106,13 +129,13 @@ impl Default for StateSyncDriverConfig {
 #[derive(Copy, Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StorageServiceConfig {
-    pub max_account_states_chunk_sizes: u64, // Max num of accounts per chunk
-    pub max_concurrent_requests: u64,        // Max num of concurrent storage server tasks
-    pub max_epoch_chunk_size: u64,           // Max num of epoch ending ledger infos per chunk
-    pub max_lru_cache_size: u64,             // Max num of items in the lru cache before eviction
-    pub max_network_channel_size: u64,       // Max num of pending network messages
-    pub max_subscription_period_ms: u64,     // Max period (ms) of pending subscription requests
-    pub max_transaction_chunk_size: u64,     // Max num of transactions per chunk
+    pub max_concurrent_requests: u64, // Max num of concurrent storage server tasks
+    pub max_epoch_chunk_size: u64,    // Max num of epoch ending ledger infos per chunk
+    pub max_lru_cache_size: u64,      // Max num of items in the lru cache before eviction
+    pub max_network_channel_size: u64, // Max num of pending network messages
+    pub max_state_chunk_size: u64,    // Max num of state keys and values per chunk
+    pub max_subscription_period_ms: u64, // Max period (ms) of pending subscription requests
+    pub max_transaction_chunk_size: u64, // Max num of transactions per chunk
     pub max_transaction_output_chunk_size: u64, // Max num of transaction outputs per chunk
     pub storage_summary_refresh_interval_ms: u64, // The interval (ms) to refresh the storage summary
 }
@@ -120,11 +143,11 @@ pub struct StorageServiceConfig {
 impl Default for StorageServiceConfig {
     fn default() -> Self {
         Self {
-            max_account_states_chunk_sizes: 1000,
             max_concurrent_requests: 4000,
             max_epoch_chunk_size: 100,
             max_lru_cache_size: 100,
             max_network_channel_size: 4000,
+            max_state_chunk_size: 1000,
             max_subscription_period_ms: 10000,
             max_transaction_chunk_size: 1000,
             max_transaction_output_chunk_size: 1000,

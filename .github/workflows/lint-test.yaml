@@ -15,7 +15,8 @@ env:
 
 # cancel redundant builds
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # cancel redundant builds on PRs (only on PR, not on branches)
+  group: ${{ github.workflow }}-${{ (github.event_name == 'pull_request' && github.ref) || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -135,7 +136,7 @@ jobs:
         with:
           fetch-depth: 0 # get all the history because cargo xtest --change-since origin/main requires it.
       - uses: ./.github/actions/rust-setup
-      - run: cargo xtest --doc --unit --changed-since "origin/main"
+      - run: cargo xtest --doc --unit --changed-since "origin/main" --exclude aptos-node-checker
 
   rust-unit-nextest:
     runs-on: high-perf-docker

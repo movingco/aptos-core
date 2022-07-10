@@ -13,7 +13,10 @@ use crate::{
     },
     liveness::{
         cached_proposer_election::CachedProposerElection,
-        leader_reputation::{ActiveInactiveHeuristic, AptosDBBackend, LeaderReputation},
+        leader_reputation::{
+            ActiveInactiveHeuristic, AptosDBBackend, LeaderReputation, ProposerAndVoterHeuristic,
+            ReputationHeuristic,
+        },
         proposal_generator::ProposalGenerator,
         proposer_election::ProposerElection,
         rotating_proposer_election::{choose_leader, RotatingProposer},
@@ -32,7 +35,7 @@ use crate::{
     util::time_service::TimeService,
 };
 use anyhow::{bail, ensure, Context};
-use aptos_config::config::{ConsensusConfig, ConsensusProposerType, NodeConfig};
+use aptos_config::config::{ConsensusConfig, NodeConfig};
 use aptos_infallible::{duration_since_epoch, Mutex};
 use aptos_logger::prelude::*;
 use aptos_mempool::QuorumStoreRequest;
@@ -41,7 +44,10 @@ use aptos_types::{
     account_address::AccountAddress,
     epoch_change::EpochChangeProof,
     epoch_state::EpochState,
-    on_chain_config::{OnChainConfigPayload, OnChainConsensusConfig, ValidatorSet},
+    on_chain_config::{
+        LeaderReputationType, OnChainConfigPayload, OnChainConsensusConfig, ProposerElectionType,
+        ValidatorSet,
+    },
     validator_verifier::ValidatorVerifier,
 };
 use channel::{aptos_channel, message_queues::QueueStyle};
@@ -71,6 +77,9 @@ use std::{
 /// Range of rounds (window) that we might be calling proposer election
 /// functions with at any given time, in addition to the proposer history length.
 const PROPSER_ELECTION_CACHING_WINDOW_ADDITION: usize = 3;
+/// Number of rounds we expect storage to be ahead of the proposer round,
+/// used for fetching data from DB.
+const PROPSER_ROUND_BEHIND_STORAGE_BUFFER: usize = 10;
 
 #[allow(clippy::large_enum_variant)]
 pub enum LivenessStorageData {
@@ -110,6 +119,7 @@ pub struct EpochManager {
         aptos_channel::Sender<(Author, Discriminant<VerifiedEvent>), (Author, VerifiedEvent)>,
     >,
     epoch_state: Option<EpochState>,
+    block_store: Option<Arc<BlockStore>>,
 }
 
 impl EpochManager {
@@ -146,6 +156,7 @@ impl EpochManager {
             buffer_manager_reset_tx: None,
             round_manager_tx: None,
             epoch_state: None,
+            block_store: None,
         }
     }
 
@@ -184,29 +195,58 @@ impl EpochManager {
             .verifier
             .get_ordered_account_addresses_iter()
             .collect::<Vec<_>>();
-        match &self.config.proposer_type {
-            ConsensusProposerType::RotatingProposer => Box::new(RotatingProposer::new(
-                proposers,
-                self.config.contiguous_rounds,
-            )),
-            // We don't really have a fixed proposer!
-            ConsensusProposerType::FixedProposer => {
-                let proposer = choose_leader(proposers);
-                Box::new(RotatingProposer::new(
-                    vec![proposer],
-                    self.config.contiguous_rounds,
-                ))
+        match &onchain_config.proposer_election_type() {
+            ProposerElectionType::RotatingProposer(contiguous_rounds) => {
+                Box::new(RotatingProposer::new(proposers, *contiguous_rounds))
             }
-            ConsensusProposerType::LeaderReputation(heuristic_config) => {
+            // We don't really have a fixed proposer!
+            ProposerElectionType::FixedProposer(contiguous_rounds) => {
+                let proposer = choose_leader(proposers);
+                Box::new(RotatingProposer::new(vec![proposer], *contiguous_rounds))
+            }
+            ProposerElectionType::LeaderReputation(leader_reputation_type) => {
+                let (heuristic, window_size) = match &leader_reputation_type {
+                    LeaderReputationType::ActiveInactive(active_inactive_config) => {
+                        let window_size = proposers.len()
+                            * active_inactive_config.window_num_validators_multiplier;
+                        let heuristic: Box<dyn ReputationHeuristic> =
+                            Box::new(ActiveInactiveHeuristic::new(
+                                self.author,
+                                active_inactive_config.active_weight,
+                                active_inactive_config.inactive_weight,
+                                window_size,
+                            ));
+                        (heuristic, window_size)
+                    }
+                    LeaderReputationType::ProposerAndVoter(proposer_and_voter_config) => {
+                        let proposer_window_size = proposers.len()
+                            * proposer_and_voter_config.proposer_window_num_validators_multiplier;
+                        let voter_window_size = proposers.len()
+                            * proposer_and_voter_config.voter_window_num_validators_multiplier;
+                        let heuristic: Box<dyn ReputationHeuristic> =
+                            Box::new(ProposerAndVoterHeuristic::new(
+                                self.author,
+                                proposer_and_voter_config.active_weight,
+                                proposer_and_voter_config.inactive_weight,
+                                proposer_and_voter_config.failed_weight,
+                                proposer_and_voter_config.failure_threshold_percent,
+                                voter_window_size,
+                                proposer_window_size,
+                            ));
+                        (
+                            heuristic,
+                            std::cmp::max(proposer_window_size, voter_window_size),
+                        )
+                    }
+                };
+
                 let backend = Box::new(AptosDBBackend::new(
-                    proposers.len(),
-                    onchain_config.leader_reputation_exclude_round() + 10,
+                    epoch_state.epoch,
+                    window_size,
+                    onchain_config.leader_reputation_exclude_round() as usize
+                        + onchain_config.max_failed_authors_to_store()
+                        + PROPSER_ROUND_BEHIND_STORAGE_BUFFER,
                     self.storage.aptos_db(),
-                ));
-                let heuristic = Box::new(ActiveInactiveHeuristic::new(
-                    self.author,
-                    heuristic_config.active_weights,
-                    heuristic_config.inactive_weights,
                 ));
                 let proposer_election = Box::new(LeaderReputation::new(
                     epoch_state.epoch,
@@ -218,11 +258,11 @@ impl EpochManager {
                 // LeaderReputation is not cheap, so we can cache the amount of rounds round_manager needs.
                 Box::new(CachedProposerElection::new(
                     proposer_election,
-                    self.config.max_failed_authors_to_store
+                    onchain_config.max_failed_authors_to_store()
                         + PROPSER_ELECTION_CACHING_WINDOW_ADDITION,
                 ))
             }
-            ConsensusProposerType::RoundProposer(round_proposers) => {
+            ProposerElectionType::RoundProposer(round_proposers) => {
                 // Hardcoded to the first proposer
                 let default_proposer = proposers.get(0).unwrap();
                 Box::new(RoundProposer::new(
@@ -491,12 +531,12 @@ impl EpochManager {
             Arc::new(payload_manager),
             self.time_service.clone(),
             self.config.max_block_size,
-            self.config.max_failed_authors_to_store,
+            onchain_config.max_failed_authors_to_store(),
         );
 
         let mut round_manager = RoundManager::new(
             epoch_state,
-            block_store,
+            block_store.clone(),
             round_state,
             proposer_election,
             proposal_generator,
@@ -514,6 +554,7 @@ impl EpochManager {
             Some(&counters::ROUND_MANAGER_CHANNEL_MSGS),
         );
         self.round_manager_tx = Some(round_manager_tx);
+        self.block_store = Some(block_store);
         tokio::spawn(round_manager.start(round_manager_rx));
     }
 
@@ -527,15 +568,23 @@ impl EpochManager {
         };
         self.shutdown_current_processor().await;
 
-        let onchain_config: OnChainConsensusConfig = payload.get().unwrap_or_default();
+        let onchain_config: anyhow::Result<OnChainConsensusConfig> = payload.get();
+        if let Err(error) = &onchain_config {
+            error!("Failed to read on-chain consensus config {}", error);
+        }
+
         self.epoch_state = Some(epoch_state.clone());
 
         let initial_data = self
             .storage
             .start()
             .expect_recovery_data("Consensusdb is corrupted, need to do a backup and restore");
-        self.start_round_manager(initial_data, epoch_state, onchain_config)
-            .await;
+        self.start_round_manager(
+            initial_data,
+            epoch_state,
+            onchain_config.unwrap_or_default(),
+        )
+        .await;
     }
 
     async fn process_message(
@@ -585,8 +634,8 @@ impl EpochManager {
                 } else {
                     monitor!(
                         "process_different_epoch_consensus_msg",
-                        self.process_different_epoch(event.epoch(), peer_id).await?
-                    );
+                        self.process_different_epoch(event.epoch(), peer_id).await
+                    )?;
                 }
             }
             ConsensusMsg::EpochChangeProof(proof) => {
@@ -598,10 +647,7 @@ impl EpochManager {
                     "Proof from epoch {}", msg_epoch,
                 );
                 if msg_epoch == self.epoch() {
-                    monitor!(
-                        "process_epoch_proof",
-                        self.initiate_new_epoch(*proof).await?
-                    );
+                    monitor!("process_epoch_proof", self.initiate_new_epoch(*proof).await)?;
                 } else {
                     bail!(
                         "[EpochManager] Unexpected epoch proof from epoch {}, local epoch {}",
@@ -617,8 +663,8 @@ impl EpochManager {
                 );
                 monitor!(
                     "process_epoch_retrieval",
-                    self.process_epoch_retrieval(*request, peer_id).await?
-                );
+                    self.process_epoch_retrieval(*request, peer_id).await
+                )?;
             }
             _ => {
                 bail!("[EpochManager] Unexpected messages: {:?}", msg);
@@ -658,11 +704,15 @@ impl EpochManager {
         }
     }
 
-    fn process_block_retrieval(&mut self, request: IncomingBlockRetrievalRequest) {
-        self.forward_to_round_manager(
-            self.author,
-            VerifiedEvent::BlockRetrievalRequest(Box::new(request)),
-        );
+    async fn process_block_retrieval(
+        &self,
+        request: IncomingBlockRetrievalRequest,
+    ) -> anyhow::Result<()> {
+        if let Some(block_store) = &self.block_store {
+            block_store.process_block_retrieval(request).await
+        } else {
+            Err(anyhow::anyhow!("Round manager not started"))
+        }
     }
 
     fn process_local_timeout(&mut self, round: u64) {
@@ -694,7 +744,9 @@ impl EpochManager {
                     }
                 }
                 Some(request) = network_receivers.block_retrieval.next() => {
-                    self.process_block_retrieval(request);
+                    if let Err(e) = self.process_block_retrieval(request).await {
+                        error!(epoch = self.epoch(), error = ?e, kind = error_kind(&e));
+                    }
                 }
                 Some(round) = round_timeout_sender_rx.next() => {
                     self.process_local_timeout(round);

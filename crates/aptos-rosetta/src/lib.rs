@@ -5,12 +5,13 @@
 //!
 //! [Rosetta API Spec](https://www.rosetta-api.org/docs/Reference.html)
 
+use crate::{account::CoinCache, error::ApiError};
 use aptos_api::runtime::WebServer;
 use aptos_config::config::ApiConfig;
 use aptos_logger::debug;
 use aptos_rest_client::aptos_api_types::Error;
 use aptos_types::chain_id::ChainId;
-use std::convert::Infallible;
+use std::{convert::Infallible, sync::Arc};
 use tokio::task::JoinHandle;
 use warp::{
     http::{HeaderValue, Method, StatusCode},
@@ -20,6 +21,7 @@ use warp::{
 
 mod account;
 mod block;
+mod construction;
 mod network;
 
 pub mod client;
@@ -36,15 +38,31 @@ pub const ROSETTA_VERSION: &str = "1.4.12";
 /// Rosetta API context for use on all APIs
 #[derive(Clone, Debug)]
 pub struct RosettaContext {
-    pub rest_client: aptos_rest_client::Client,
+    /// A rest client to connect to a fullnode
+    rest_client: Option<aptos_rest_client::Client>,
+    /// ChainId of the chain to connect to
     pub chain_id: ChainId,
+
+    pub block_size: u64,
+    pub coin_cache: Arc<CoinCache>,
+}
+
+impl RosettaContext {
+    fn rest_client(&self) -> Result<&aptos_rest_client::Client, ApiError> {
+        if let Some(ref client) = self.rest_client {
+            Ok(client)
+        } else {
+            Err(ApiError::NodeIsOffline)
+        }
+    }
 }
 
 /// Creates HTTP server (warp-based) for Rosetta
 pub fn bootstrap(
+    block_size: u64,
     chain_id: ChainId,
     api_config: ApiConfig,
-    rest_client: aptos_rest_client::Client,
+    rest_client: Option<aptos_rest_client::Client>,
 ) -> anyhow::Result<tokio::runtime::Runtime> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .thread_name("rosetta")
@@ -57,8 +75,10 @@ pub fn bootstrap(
 
     runtime.spawn(async move {
         let context = RosettaContext {
+            block_size,
             rest_client,
             chain_id,
+            coin_cache: Arc::new(CoinCache::new()),
         };
         api.serve(routes(context)).await;
     });
@@ -68,14 +88,16 @@ pub fn bootstrap(
 pub async fn bootstrap_async(
     chain_id: ChainId,
     api_config: ApiConfig,
-    rest_client: aptos_rest_client::Client,
+    rest_client: Option<aptos_rest_client::Client>,
 ) -> anyhow::Result<JoinHandle<()>> {
     debug!("Starting up Rosetta server with {:?}", api_config);
     let api = WebServer::from(api_config);
     let handle = tokio::spawn(async move {
         let context = RosettaContext {
+            block_size: 1000,
             rest_client,
             chain_id,
+            coin_cache: Arc::new(CoinCache::new()),
         };
         api.serve(routes(context)).await;
     });
@@ -87,8 +109,18 @@ pub fn routes(
     context: RosettaContext,
 ) -> impl Filter<Extract = impl Reply, Error = Infallible> + Clone {
     account::routes(context.clone())
-        .or(block::routes(context.clone()))
-        .or(network::routes(context))
+        .or(block::block_route(context.clone()))
+        .or(construction::combine_route(context.clone()))
+        .or(construction::derive_route(context.clone()))
+        .or(construction::hash_route(context.clone()))
+        .or(construction::metadata_route(context.clone()))
+        .or(construction::parse_route(context.clone()))
+        .or(construction::payloads_route(context.clone()))
+        .or(construction::preprocess_route(context.clone()))
+        .or(construction::submit_route(context.clone()))
+        .or(network::list_route(context.clone()))
+        .or(network::options_route(context.clone()))
+        .or(network::status_route(context))
         // TODO: Add health check?
         .with(
             warp::cors()
@@ -96,6 +128,7 @@ pub fn routes(
                 .allow_methods(vec![Method::GET, Method::POST])
                 .allow_headers(vec![warp::http::header::CONTENT_TYPE]),
         )
+        .with(aptos_api::log::logger())
         .recover(handle_rejection)
     // TODO Logger?
     // TODO metrics?
@@ -105,6 +138,8 @@ pub fn routes(
 async fn handle_rejection(err: Rejection) -> Result<impl Reply, Infallible> {
     let code;
     let body;
+
+    debug!("Failed with: {:?}", err);
 
     if err.is_not_found() {
         code = StatusCode::NOT_FOUND;

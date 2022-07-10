@@ -15,7 +15,6 @@ use crate::{
     errors::expect_only_successful_execution,
     logging::AdapterLogSchema,
     move_vm_ext::{MoveResolverExt, SessionExt, SessionId},
-    script_to_script_function,
     system_module_names::*,
     transaction_metadata::TransactionMetadata,
     VMExecutor, VMValidator,
@@ -23,6 +22,7 @@ use crate::{
 use anyhow::Result;
 use aptos_crypto::HashValue;
 use aptos_logger::prelude::*;
+use aptos_module_verifier::module_init::verify_module_init_function;
 use aptos_state_view::StateView;
 use aptos_types::{
     account_config,
@@ -40,12 +40,13 @@ use fail::fail_point;
 use move_deps::{
     move_binary_format::{
         access::ModuleAccess,
-        errors::{verification_error, Location, VMResult},
+        errors::{verification_error, Location, PartialVMError, VMResult},
         CompiledModule, IndexKind,
     },
     move_core_types::{
         account_address::AccountAddress,
         gas_schedule::{GasAlgebra, GasUnits},
+        ident_str,
         language_storage::ModuleId,
         transaction_argument::convert_txn_args,
         value::{serialize_values, MoveValue},
@@ -304,7 +305,6 @@ impl AptosVM {
 
             match payload {
                 TransactionPayload::Script(script) => {
-                    let remapped_script = script_to_script_function::remapping(script.code());
                     let mut senders = vec![txn_data.sender()];
                     senders.extend(txn_data.secondary_signers());
                     let loaded_func =
@@ -314,23 +314,12 @@ impl AptosVM {
                         convert_txn_args(script.args()),
                         &loaded_func,
                     )?;
-                    match remapped_script {
-                        // We are in this case before VERSION_2
-                        // or if there is no remapping for the script
-                        None => session.execute_script(
-                            script.code(),
-                            script.ty_args().to_vec(),
-                            args,
-                            gas_status,
-                        ),
-                        Some((module, function)) => session.execute_entry_function(
-                            module,
-                            function,
-                            script.ty_args().to_vec(),
-                            args,
-                            gas_status,
-                        ),
-                    }
+                    session.execute_script(
+                        script.code(),
+                        script.ty_args().to_vec(),
+                        args,
+                        gas_status,
+                    )
                 }
                 TransactionPayload::ScriptFunction(script_fn) => {
                     let mut senders = vec![txn_data.sender()];
@@ -394,6 +383,49 @@ impl AptosVM {
         Ok(())
     }
 
+    fn execute_module_initialization<S: MoveResolverExt>(
+        &self,
+        session: &mut SessionExt<S>,
+        gas_status: &mut GasStatus,
+        modules: &ModuleBundle,
+        senders: &[AccountAddress],
+    ) -> VMResult<()> {
+        let init_func_name = ident_str!("init_module");
+        for module_blob in modules.iter() {
+            let args: Vec<Vec<u8>> = senders
+                .iter()
+                .map(|s| MoveValue::Signer(*s).simple_serialize().unwrap())
+                .collect();
+            match CompiledModule::deserialize(module_blob.code()) {
+                Ok(module) => {
+                    let init_function =
+                        session.load_function(&module.self_id(), init_func_name, &[]);
+                    // it is ok to not have init_module function
+                    // init_module function should be (1) private and (2) has no return value
+                    if init_function.is_ok() {
+                        if verify_module_init_function(&module).is_ok() {
+                            session.execute_function_bypass_visibility(
+                                &module.self_id(),
+                                init_func_name,
+                                vec![],
+                                args,
+                                gas_status,
+                            )?;
+                        } else {
+                            return Err(PartialVMError::new(StatusCode::VERIFICATION_ERROR)
+                                .finish(Location::Undefined));
+                        }
+                    }
+                }
+                Err(_err) => {
+                    return Err(PartialVMError::new(StatusCode::CODE_DESERIALIZATION_ERROR)
+                        .finish(Location::Undefined))
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn execute_modules<S: MoveResolverExt>(
         &self,
         mut session: SessionExt<S>,
@@ -425,6 +457,14 @@ impl AptosVM {
             .map_err(|e| e.into_vm_status())?;
 
         charge_global_write_gas_usage(gas_status, &session, &txn_data.sender())?;
+
+        // call init function of the each module
+        self.execute_module_initialization(
+            &mut session,
+            gas_status,
+            modules,
+            &[txn_data.sender()],
+        )?;
 
         self.success_transaction_cleanup(session, gas_status, txn_data, log_context)
     }
@@ -520,6 +560,7 @@ impl AptosVM {
                     None => vec![*execute_as],
                     Some(sender) => vec![sender, *execute_as],
                 };
+
                 let loaded_func = tmp_session
                     .load_script(script.code(), script.ty_args().to_vec())
                     .map_err(|e| Err(e.into_vm_status()))?;
@@ -529,26 +570,17 @@ impl AptosVM {
                     &loaded_func,
                 )
                 .map_err(Err)?;
-                let remapped_script = script_to_script_function::remapping(script.code());
-                let execution_result = match remapped_script {
-                    // We are in this case before VERSION_2
-                    // or if there is no remapping for the script
-                    None => tmp_session.execute_script(
+
+                let execution_result = tmp_session
+                    .execute_script(
                         script.code(),
                         script.ty_args().to_vec(),
                         args,
                         &mut gas_status,
-                    ),
-                    Some((module, function)) => tmp_session.execute_entry_function(
-                        module,
-                        function,
-                        script.ty_args().to_vec(),
-                        args,
-                        &mut gas_status,
-                    ),
-                }
-                .and_then(|_| tmp_session.finish())
-                .map_err(|e| e.into_vm_status());
+                    )
+                    .and_then(|_| tmp_session.finish())
+                    .map_err(|e| e.into_vm_status());
+
                 match execution_result {
                     Ok(session_out) => session_out.into_change_set(&mut ()).map_err(Err)?,
                     Err(e) => {

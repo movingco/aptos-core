@@ -11,6 +11,7 @@ pub struct State {
     pub epoch: u64,
     pub version: u64,
     pub timestamp_usecs: u64,
+    pub oldest_ledger_version: Option<u64>,
 }
 
 impl State {
@@ -31,6 +32,11 @@ impl State {
             .get(X_APTOS_EPOCH)
             .and_then(|h| h.to_str().ok())
             .and_then(|s| s.parse().ok());
+        // TODO: Why doesn't the constant work?
+        let oldest_ledger_version = headers
+            .get("X-Aptos-Ledger-Oldest-Version")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.parse().ok());
 
         let state = if let (Some(chain_id), Some(version), Some(timestamp_usecs), Some(epoch)) =
             (maybe_chain_id, maybe_version, maybe_timestamp, maybe_epoch)
@@ -40,9 +46,18 @@ impl State {
                 epoch,
                 version,
                 timestamp_usecs,
+                oldest_ledger_version,
             }
         } else {
-            todo!()
+            anyhow::bail!(
+                "Failed to build State from headers due to missing values in response. \
+                Chain ID: {:?}, Version: {:?}, Timestamp: {:?}, Epoch: {:?}, Oldest Ledger Version: {:?}",
+                maybe_chain_id,
+                maybe_version,
+                maybe_timestamp,
+                maybe_epoch,
+                oldest_ledger_version,
+            )
         };
 
         Ok(state)

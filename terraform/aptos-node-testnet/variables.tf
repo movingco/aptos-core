@@ -62,7 +62,7 @@ variable "k8s_admins" {
 ### Testnet config
 
 variable "chain_id" {
-  description = "Aptos chain ID"
+  description = "Aptos chain ID. If var.enable_forge set, defaults to 4"
   default     = 4
 }
 
@@ -104,6 +104,12 @@ variable "logger_helm_values" {
 
 variable "monitoring_helm_values" {
   description = "Map of values to pass to monitoring helm chart"
+  type        = any
+  default     = {}
+}
+
+variable "testnet_addons_helm_values" {
+  description = "Map of values to pass to testnet-addons helm chart"
   type        = any
   default     = {}
 }

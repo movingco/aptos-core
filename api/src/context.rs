@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use aptos_api_types::{Error, LedgerInfo, TransactionOnChainData};
-use aptos_config::config::ApiConfig;
+use aptos_config::config::{NodeConfig, RoleType};
 use aptos_crypto::HashValue;
 use aptos_mempool::{MempoolClientRequest, MempoolClientSender, SubmissionStatus};
 use aptos_types::{
@@ -16,7 +16,7 @@ use aptos_types::{
 };
 use storage_interface::{DbReader, Order};
 
-use anyhow::{ensure, format_err, Result};
+use anyhow::{anyhow, ensure, format_err, Result};
 use aptos_state_view::StateView;
 use aptos_types::{
     state_store::{state_key::StateKey, state_key_prefix::StateKeyPrefix},
@@ -36,7 +36,7 @@ pub struct Context {
     chain_id: ChainId,
     db: Arc<dyn DbReader>,
     mp_sender: MempoolClientSender,
-    api_config: ApiConfig,
+    node_config: NodeConfig,
 }
 
 impl Context {
@@ -44,13 +44,13 @@ impl Context {
         chain_id: ChainId,
         db: Arc<dyn DbReader>,
         mp_sender: MempoolClientSender,
-        api_config: ApiConfig,
+        node_config: NodeConfig,
     ) -> Self {
         Self {
             chain_id,
             db,
             mp_sender,
-            api_config,
+            node_config,
         }
     }
 
@@ -68,8 +68,12 @@ impl Context {
         self.chain_id
     }
 
+    pub fn node_role(&self) -> RoleType {
+        self.node_config.base.role
+    }
+
     pub fn content_length_limit(&self) -> u64 {
-        self.api_config.content_length_limit()
+        self.node_config.api.content_length_limit()
     }
 
     pub fn filter(self) -> impl Filter<Extract = (Context,), Error = Infallible> + Clone {
@@ -87,10 +91,15 @@ impl Context {
     }
 
     pub fn get_latest_ledger_info(&self) -> Result<LedgerInfo, Error> {
-        Ok(LedgerInfo::new(
-            &self.chain_id(),
-            &self.get_latest_ledger_info_with_signatures()?,
-        ))
+        if let Some(oldest_version) = self.db.get_first_txn_version()? {
+            Ok(LedgerInfo::new(
+                &self.chain_id(),
+                &self.get_latest_ledger_info_with_signatures()?,
+                oldest_version,
+            ))
+        } else {
+            return Err(anyhow! {"Failed to retrieve oldest version"}.into());
+        }
     }
 
     pub fn get_latest_ledger_info_with_signatures(&self) -> Result<LedgerInfoWithSignatures> {

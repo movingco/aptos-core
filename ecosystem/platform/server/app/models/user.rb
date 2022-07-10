@@ -11,8 +11,11 @@ class User < ApplicationRecord
          :omniauthable, omniauth_providers: %i[discord github google],
                         authentication_keys: [:username]
 
+  USERNAME_REGEX = /\A(?!\A[\-_])(?!.*[\-_]{2,})(?!.*[\-_]\Z)[a-zA-Z0-9\-_]+\Z/
+  USERNAME_REGEX_JS = USERNAME_REGEX.inspect[1..-2].gsub('\\A', '^').gsub('\\Z', '$')
+
   validates :username, uniqueness: { case_sensitive: false }, length: { minimum: 3, maximum: 20 },
-                       format: { with: /\A[a-zA-Z0-9]+\z/ }, allow_nil: true
+                       format: { with: User::USERNAME_REGEX }, allow_nil: true
   validates :email, uniqueness: { case_sensitive: false }, format: { with: URI::MailTo::EMAIL_REGEXP }, allow_nil: true
 
   validate_aptos_address :mainnet_address
@@ -20,8 +23,10 @@ class User < ApplicationRecord
   validates :terms_accepted, acceptance: true
 
   has_many :authorizations, dependent: :destroy
-  has_one :it2_profile
-  has_many :nfts
+  has_one :it1_profile
+  has_one :it2_profile, dependent: :destroy
+  has_one :it2_survey, dependent: :destroy
+  has_many :nfts, dependent: :destroy
 
   def self.from_omniauth(auth, current_user = nil)
     # find an existing user or create a user and authorizations
@@ -63,7 +68,10 @@ class User < ApplicationRecord
   # end
 
   def maybe_send_ait2_registration_complete_email
-    SendRegistrationCompleteEmailJob.perform_now({ user_id: id }) if ait2_registration_complete?
+    return unless ait2_registration_complete?
+
+    SendRegistrationCompleteEmailJob.perform_now({ user_id: id })
+    DiscourseAddGroupJob.perform_later({ user_id: id, group_name: 'ait2_eligible' })
   end
 
   def ait2_registration_complete?
@@ -103,11 +111,23 @@ class User < ApplicationRecord
                           username: "#{raw_info['username'].downcase}##{raw_info['discriminator']}"
                         })
     when 'google'
-      # No additional data from Google.
+      # No additional data from Google. But we can trust the email!
+      if !email_confirmed? && !User.exists?(email: auth[:email])
+        self.email = auth[:email]
+        confirm
+      end
     else
       raise 'Unknown Provider!'
     end
     authorizations.build(auth)
+  end
+
+  def registration_completed?
+    email_confirmed? && username.present?
+  end
+
+  def email_confirmed?
+    email.present? && confirmed?
   end
 
   private

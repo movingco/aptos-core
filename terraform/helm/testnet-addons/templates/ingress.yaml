@@ -27,6 +27,7 @@ metadata:
     {{- end }}
 spec:
   rules:
+  {{- if .Values.service.domain }}
   - host: fullnode.{{ .Values.service.domain }}
     http:
       paths:
@@ -37,6 +38,7 @@ spec:
             name: {{ include "testnet-addons.fullname" . }}-api
             port:
               number: 80
+  {{- end }}
   - http:
       paths:
       - path: /waypoint.txt

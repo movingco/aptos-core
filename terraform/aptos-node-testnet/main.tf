@@ -14,27 +14,91 @@ locals {
   chain_name = var.chain_name != "" ? var.chain_name : "${local.workspace}net"
 }
 
+# Forge testing overrides
+locals {
+  # Forge assumes the chain_id is 4
+  chain_id = var.enable_forge ? 4 : var.chain_id
+
+  aptos_node_helm_values_forge_override = {
+    // no VFNs in forge for now
+    fullnode = {
+      groups = []
+    }
+    // make all services internal ClusterIP and open all ports
+    service = {
+      validator = {
+        external = {
+          type = "ClusterIP"
+        }
+        enableRestApi     = true
+        enableMetricsPort = true
+      }
+      fullnode = {
+        external = {
+          type = "ClusterIP"
+        }
+        enableRestApi     = true
+        enableMetricsPort = true
+      }
+    }
+  }
+  genesis_helm_values_forge_override = {
+    chain = {
+      # this key is hard-coded into forge. see:
+      # testsuite/forge/src/backend/k8s/mod.rs
+      root_key = "0x48136DF3174A3DE92AFDB375FFE116908B69FF6FAB9B1410E548A33FEA1D159D"
+    }
+  }
+}
+
+# helm value override merging with forge
+module "aptos-node-helm-values-deepmerge" {
+  # https://registry.terraform.io/modules/Invicton-Labs/deepmerge/null/0.1.5
+  source = "Invicton-Labs/deepmerge/null"
+  maps = [
+    var.enable_forge ? local.aptos_node_helm_values_forge_override : map(),
+    var.aptos_node_helm_values,
+  ]
+}
+
+module "genesis-helm-values-deepmerge" {
+  # https://registry.terraform.io/modules/Invicton-Labs/deepmerge/null/0.1.5
+  source = "Invicton-Labs/deepmerge/null"
+  maps = [
+    var.enable_forge ? local.genesis_helm_values_forge_override : map(),
+    var.genesis_helm_values,
+  ]
+}
+
 module "validator" {
   source = "../aptos-node/aws"
 
-  region                      = var.region
-  iam_path                    = var.iam_path
-  zone_id                     = var.zone_id
+  region   = var.region
+  iam_path = var.iam_path
+  zone_id  = var.zone_id
+  # do not create the main fullnode and validator DNS records
+  # instead, rely on external-dns from the testnet-addons
+  create_records = false
+  workspace_dns  = var.workspace_dns
+
   permissions_boundary_policy = var.permissions_boundary_policy
   workspace_name_override     = var.workspace_name_override
+
+  # if forge enabled, standardize the helm release name for ease of operations
+  helm_release_name_override = var.enable_forge ? "aptos-node" : ""
 
   k8s_api_sources = var.admin_sources_ipv4
   k8s_admin_roles = var.k8s_admin_roles
   k8s_admins      = var.k8s_admins
 
-  chain_id       = var.chain_id
+  chain_id       = local.chain_id
   era            = var.era
   chain_name     = local.chain_name
   image_tag      = var.image_tag
   validator_name = "aptos-node"
 
   num_validators = var.num_validators
-  helm_values = var.aptos_node_helm_values
+  helm_values    = module.aptos-node-helm-values-deepmerge.merged
 
   # allow all nodegroups to surge to 2x their size, in case of total nodes replacement
   validator_instance_num = var.num_validator_instance > 0 ? 2 * var.num_validator_instance : var.num_validators
@@ -52,7 +116,7 @@ module "validator" {
 }
 
 locals {
-  aptos_node_helm_prefix = "${module.validator.helm_release_name}-aptos-node"
+  aptos_node_helm_prefix = var.enable_forge ? "aptos-node" : "${module.validator.helm_release_name}-aptos-node"
 }
 
 provider "helm" {
@@ -80,13 +144,13 @@ resource "helm_release" "genesis" {
       chain = {
         name     = local.chain_name
         era      = var.era
-        chain_id = var.chain_id
+        chain_id = local.chain_id
       }
       imageTag = var.image_tag
       genesis = {
         numValidators   = var.num_validators
         username_prefix = local.aptos_node_helm_prefix
-        domain = local.domain
+        domain          = local.domain
         validator = {
           enable_onchain_discovery = false
         }
@@ -97,6 +161,6 @@ resource "helm_release" "genesis" {
         }
       }
     }),
-    jsonencode(var.genesis_helm_values)
+    jsonencode(module.genesis-helm-values-deepmerge.merged)
   ]
 }

@@ -18,12 +18,12 @@ use thiserror::Error;
 
 mod consensus_config;
 pub use consensus_config::*;
-mod debug_interface_config;
-pub use debug_interface_config::*;
 mod error;
 pub use error::*;
 mod execution_config;
 pub use execution_config::*;
+mod inspection_service_config;
+pub use inspection_service_config::*;
 mod logger_config;
 pub use logger_config::*;
 mod mempool_config;
@@ -42,7 +42,7 @@ mod test_config;
 pub use test_config::*;
 mod api_config;
 pub use api_config::*;
-use aptos_crypto::{ed25519::Ed25519PrivateKey, x25519};
+use aptos_crypto::{bls12381, ed25519::Ed25519PrivateKey, x25519};
 use aptos_types::account_address::AccountAddress;
 
 /// Represents a deprecated config that provides no field verification.
@@ -61,11 +61,11 @@ pub struct NodeConfig {
     #[serde(default)]
     pub consensus: ConsensusConfig,
     #[serde(default)]
-    pub debug_interface: DebugInterfaceConfig,
-    #[serde(default)]
     pub execution: ExecutionConfig,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub full_node_networks: Vec<NetworkConfig>,
+    #[serde(default)]
+    pub inspection_service: InspectionServiceConfig,
     #[serde(default)]
     pub logger: LoggerConfig,
     #[serde(default)]
@@ -173,7 +173,7 @@ pub struct IdentityBlob {
     pub account_private_key: Option<Ed25519PrivateKey>,
     /// Optional consensus key.  Only used for validators
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub consensus_private_key: Option<Ed25519PrivateKey>,
+    pub consensus_private_key: Option<bls12381::PrivateKey>,
     /// Network private key.  Peer id is derived from this if account address is not present
     pub network_private_key: x25519::PrivateKey,
 }
@@ -316,8 +316,8 @@ impl NodeConfig {
     }
 
     pub fn randomize_ports(&mut self) {
-        self.debug_interface.randomize_ports();
         self.api.randomize_ports();
+        self.inspection_service.randomize_ports();
         self.storage.randomize_ports();
 
         if let Some(network) = self.validator_network.as_mut() {
@@ -355,12 +355,10 @@ impl NodeConfig {
             let validator_network = self.validator_network.as_mut().unwrap();
             validator_network.random_with_peer_id(rng, Some(peer_id));
             // We want to produce this key twice
-            let mut cloned_rng = rng.clone();
             test.random_execution_key(rng);
 
             let mut safety_rules_test_config = SafetyRulesTestConfig::new(peer_id);
             safety_rules_test_config.random_consensus_key(rng);
-            safety_rules_test_config.random_execution_key(&mut cloned_rng);
             self.consensus.safety_rules.test = Some(safety_rules_test_config);
         } else {
             self.validator_network = None;

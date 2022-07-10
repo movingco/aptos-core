@@ -2,6 +2,8 @@
 # It provides a high-level mechenanism to build multiple dockerfiles in one shot.
 # Check https://crazymax.dev/docker-allhands2-buildx-bake and https://docs.docker.com/engine/reference/commandline/buildx_bake/#file-definition for an intro.
 
+variable "TARGET_CACHE_ID" {}
+
 variable "BUILD_DATE" {}
 
 variable "GITHUB_SHA" {}
@@ -14,7 +16,7 @@ variable "GIT_REV" {
   default = substr("${GIT_SHA}", 0, 8)
 }
 
-variable "GIT_BRANCH" {}
+variable "LAST_GREEN_COMMIT" {}
 
 variable "GCP_DOCKER_ARTIFACT_REPO" {}
 
@@ -28,8 +30,8 @@ variable "gh_image_cache" {
   default = "ghcr.io/aptos-labs/aptos-core"
 }
 
-variable "normalized_git_branch" {
-  default = regex_replace("${GIT_BRANCH}", "[^a-zA-Z0-9]", "-")
+variable "normalized_target_cache_id" {
+  default = regex_replace("${TARGET_CACHE_ID}", "[^a-zA-Z0-9]", "-")
 }
 
 # images with IMAGE_TARGET=release for rust build
@@ -152,13 +154,16 @@ function "generate_cache_from" {
   result = [
     "type=registry,ref=${GCP_DOCKER_ARTIFACT_REPO}/${target}:cache-main",
     "type=registry,ref=${GCP_DOCKER_ARTIFACT_REPO}/${target}:cache-auto",
-    "type=registry,ref=${GCP_DOCKER_ARTIFACT_REPO}/${target}:cache-${normalized_git_branch}"
+    "type=registry,ref=${GCP_DOCKER_ARTIFACT_REPO}/${target}:cache-${normalized_target_cache_id}",
+    "type=registry,ref=${GCP_DOCKER_ARTIFACT_REPO}/${target}:${LAST_GREEN_COMMIT}",
   ]
 }
 
 function "generate_cache_to" {
   params = [target]
-  result = ["type=registry,ref=${GCP_DOCKER_ARTIFACT_REPO}/${target}:cache-${normalized_git_branch},mode=max"]
+  result = [
+    "type=registry,ref=${GCP_DOCKER_ARTIFACT_REPO}/${target}:cache-${normalized_target_cache_id},mode=max",
+  ]
 }
 
 function "generate_tags" {

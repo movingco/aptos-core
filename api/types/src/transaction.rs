@@ -30,7 +30,7 @@ use std::{
     str::FromStr,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum TransactionData {
     OnChain(TransactionOnChainData),
     Pending(Box<SignedTransaction>),
@@ -48,7 +48,7 @@ impl From<SignedTransaction> for TransactionData {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TransactionOnChainData {
     pub version: u64,
     pub transaction: aptos_types::transaction::Transaction,
@@ -251,13 +251,14 @@ impl From<(TransactionInfo, WriteSetPayload, Vec<Event>)> for Transaction {
     }
 }
 
-impl From<(&BlockMetadata, TransactionInfo)> for Transaction {
-    fn from((txn, info): (&BlockMetadata, TransactionInfo)) -> Self {
+impl From<(&BlockMetadata, TransactionInfo, Vec<Event>)> for Transaction {
+    fn from((txn, info, events): (&BlockMetadata, TransactionInfo, Vec<Event>)) -> Self {
         Transaction::BlockMetadataTransaction(BlockMetadataTransaction {
             info,
             id: txn.id().into(),
             epoch: txn.epoch().into(),
             round: txn.round().into(),
+            events,
             previous_block_votes: txn.previous_block_votes().clone(),
             proposer: txn.proposer().into(),
             timestamp: txn.timestamp_usecs().into(),
@@ -351,6 +352,7 @@ pub struct BlockMetadataTransaction {
     pub id: HashValue,
     pub epoch: U64,
     pub round: U64,
+    pub events: Vec<Event>,
     pub previous_block_votes: Vec<bool>,
     pub proposer: Address,
     pub timestamp: U64,

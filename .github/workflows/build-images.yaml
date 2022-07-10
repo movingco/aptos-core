@@ -26,7 +26,9 @@ on: # build on main branch OR when a PR is labeled with `CICD:build-images`
 
 # cancel redundant builds
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  # for push and workflow_dispatch events we use `github.sha` in the concurrency group and don't really cancel each other out/limit concurrency
+  # for pull_request events newer jobs cancel earlier jobs to save on CI etc.
+  group: ${{ github.workflow }}-${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha || github.head_ref || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -40,6 +42,12 @@ env:
   # In case of push events, this hack is a noop as we default to `github.sha`.
   # For more info also see https://github.com/actions/checkout#checkout-pull-request-head-commit-instead-of-merge-commit
   GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  # TARGET_CACHE_ID is used as part of the docker tag / cache key inside our bake.hcl docker bake files.
+  # The goal here is to have a branch or PR-local cache such that consecutive pushes to a shared branch or a specific PR can
+  # reuse layers from a previous docker build/commit.
+  # We use `pr-<pr_number>` as cache-id for PRs and simply <branch_name> otherwise.
+  TARGET_CACHE_ID: ${{ github.event.number && format('pr-{0}', github.event.number) || github.ref_name }}
 
 permissions:
   contents: read
@@ -59,6 +67,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       contains(github.event.pull_request.labels.*.name, 'CICD:build-images') ||
       contains(github.event.pull_request.labels.*.name, 'CICD:run-e2e-tests') ||
+      contains(github.event.pull_request.labels.*.name, 'CICD:deploy-community-platform-to-staging') ||
       github.event.pull_request.auto_merge != null
     runs-on: ubuntu-latest
     steps:
@@ -68,9 +77,19 @@ jobs:
           required-permission: write
           comment-not-permitted: Sorry, you don't have permission to trigger this workflow.
 
+  determine-last-green-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: talentpair/last-green-commit-action@d95cfa836b22ef047dd0a8ddb1e6d9567982d702
+        id: last-green-commit
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+    outputs:
+      lastGreenCommit: ${{ steps.last-green-commit.outputs.result  }}
+
   rust-images:
     # trigger only for push events (on protected branches as defined above) OR on PR events with the "CICD:build-images" label.
-    needs: permission-check
+    needs: [permission-check, determine-last-green-commit]
     strategy:
       matrix:
         IMAGE_TARGET: [release, test]
@@ -99,7 +118,7 @@ jobs:
         run: docker/docker-bake-rust-all.sh
         env:
           IMAGE_TARGET: ${{ matrix.IMAGE_TARGET }}
-          GIT_BRANCH: ${{ github.head_ref }}
+          LAST_GREEN_COMMIT: ${{ needs.determine-last-green-commit.outputs.lastGreenCommit }}
 
   sdk-integration-test:
     needs: rust-images
@@ -127,7 +146,7 @@ jobs:
       merge_or_canary: ${{ github.event.pull_request.auto_merge != null && 'merge' || 'canary' }}
 
   community-platform:
-    needs: permission-check
+    needs: [permission-check]
     runs-on: high-perf-docker
     steps:
       - uses: actions/checkout@v3
@@ -149,14 +168,12 @@ jobs:
       - uses: ./.github/actions/docker-buildx-setup
 
       - name: Build and Push Community Platform image
-        env:
-          GIT_BRANCH: ${{ github.head_ref }}
         run: |
           cd ecosystem/platform/server
           docker buildx bake --progress=plain --push -f ./docker-bake.hcl
 
   indexer-server:
-    needs: permission-check
+    needs: [permission-check]
     runs-on: high-perf-docker
     steps:
       - uses: actions/checkout@v3
@@ -178,8 +195,6 @@ jobs:
       - uses: ./.github/actions/docker-buildx-setup
 
       - name: Build and Push Indexer Server image
-        env:
-          GIT_BRANCH: ${{ github.head_ref }}
         run: |
           cd ecosystem/indexer-server
           docker buildx bake --progress=plain --push -f ./docker-bake.hcl
