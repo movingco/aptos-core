@@ -1000,7 +1000,7 @@ dependencies = [
  "move-deps",
  "regex",
  "serde-generate",
- "serde-reflection 0.3.5 (git+https://github.com/aptos-labs/serde-reflection?rev=839aed62a20ddccf043c08961cfe74875741ccba)",
+ "serde-reflection",
  "serde_yaml",
  "structopt",
  "tempfile",
@@ -3355,7 +3355,7 @@ dependencies = [
  "network",
  "rand 0.7.3",
  "serde 1.0.137",
- "serde-reflection 0.3.5 (git+https://github.com/aptos-labs/serde-reflection)",
+ "serde-reflection",
  "serde_yaml",
  "structopt",
 ]
@@ -4580,7 +4580,7 @@ dependencies = [
  "move-binary-format",
  "move-core-types",
  "petgraph 0.5.1",
- "serde-reflection 0.3.5 (git+https://github.com/aptos-labs/serde-reflection?rev=839aed62a20ddccf043c08961cfe74875741ccba)",
+ "serde-reflection",
 ]
 
 [[package]]
@@ -7176,7 +7176,7 @@ dependencies = [
  "include_dir 0.6.2",
  "maplit",
  "serde 1.0.137",
- "serde-reflection 0.3.5 (git+https://github.com/aptos-labs/serde-reflection?rev=839aed62a20ddccf043c08961cfe74875741ccba)",
+ "serde-reflection",
  "serde_bytes",
  "serde_yaml",
  "structopt",
@@ -7209,16 +7209,6 @@ dependencies = [
 name = "serde-reflection"
 version = "0.3.5"
 source = "git+https://github.com/aptos-labs/serde-reflection?rev=839aed62a20ddccf043c08961cfe74875741ccba#839aed62a20ddccf043c08961cfe74875741ccba"
-dependencies = [
- "once_cell",
- "serde 1.0.137",
- "thiserror",
-]
-
-[[package]]
-name = "serde-reflection"
-version = "0.3.5"
-source = "git+https://github.com/aptos-labs/serde-reflection#262fe0545367563e056eef99d6108cacbb102192"
 dependencies = [
  "once_cell",
  "serde 1.0.137",
